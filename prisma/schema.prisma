@@ -1,0 +1,496 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  active
+  suspended
+  trial
+}
+
+enum UserRole {
+  owner
+  manager
+  staff
+  viewer
+}
+
+enum UserStatus {
+  active
+  invited
+  disabled
+}
+
+enum TableStatus {
+  available
+  occupied
+  reserved
+  blocked
+  maintenance
+}
+
+enum ReservationSource {
+  website
+  phone
+  walkin
+  admin
+  import
+}
+
+enum ReservationStatus {
+  pending
+  confirmed
+  seated
+  completed
+  cancelled
+  no_show
+}
+
+enum StockMovementType {
+  stock_in
+  stock_out
+  adjustment
+}
+
+model Tenant {
+  id           String       @id @default(cuid())
+  name         String
+  slug         String       @unique
+  customDomain String?      @map("custom_domain")
+  status       TenantStatus @default(trial)
+  plan         String       @default("starter")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  restaurants        Restaurant[]
+  users              User[]
+  diningAreas        DiningArea[]
+  tables             RestaurantTable[]
+  tableCombinations  TableCombination[]
+  customers          Customer[]
+  reservations       Reservation[]
+  openingHours       OpeningHour[]
+  serviceShifts      ServiceShift[]
+  blockedSlots       BlockedSlot[]
+  auditLogs          AuditLog[]
+  ingredients        Ingredient[]
+  suppliers          Supplier[]
+  menuCategories     MenuCategory[]
+  menuItems          MenuItem[]
+  staffMembers       StaffMember[]
+
+  @@map("tenants")
+}
+
+model Restaurant {
+  id        String   @id @default(cuid())
+  tenantId  String   @map("tenant_id")
+  name      String
+  address   String?
+  city      String?
+  phone     String?
+  email     String?
+  timezone  String   @default("Europe/Rome")
+  capacity  Int      @default(40)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users             User[]
+  diningAreas       DiningArea[]
+  tables            RestaurantTable[]
+  tableCombinations TableCombination[]
+  customers         Customer[]
+  reservations      Reservation[]
+  openingHours      OpeningHour[]
+  serviceShifts     ServiceShift[]
+  blockedSlots      BlockedSlot[]
+  auditLogs         AuditLog[]
+  ingredients       Ingredient[]
+  suppliers         Supplier[]
+  stockMovements    StockMovement[]
+  menuCategories    MenuCategory[]
+  menuItems         MenuItem[]
+  staffMembers      StaffMember[]
+  staffShifts       StaffShift[]
+
+  @@index([tenantId])
+  @@map("restaurants")
+}
+
+model User {
+  id           String     @id @default(cuid())
+  tenantId     String     @map("tenant_id")
+  restaurantId String?    @map("restaurant_id")
+  name         String
+  email        String
+  passwordHash String     @map("password_hash")
+  role         UserRole   @default(staff)
+  status       UserStatus @default(active)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant         Restaurant?   @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  createdReservations Reservation[] @relation("ReservationCreatedBy")
+  blockedSlots       BlockedSlot[]
+  auditLogs          AuditLog[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, restaurantId])
+  @@map("users")
+}
+
+model DiningArea {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  name         String
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  tables     RestaurantTable[]
+
+  @@index([tenantId, restaurantId])
+  @@map("dining_areas")
+}
+
+model RestaurantTable {
+  id           String      @id @default(cuid())
+  tenantId     String      @map("tenant_id")
+  restaurantId String      @map("restaurant_id")
+  diningAreaId String?     @map("dining_area_id")
+  name         String
+  seatsMin     Int         @map("seats_min")
+  seatsMax     Int         @map("seats_max")
+  status       TableStatus @default(available)
+  isActive     Boolean     @default(true) @map("is_active")
+  positionX    Int         @default(0) @map("position_x")
+  positionY    Int         @default(0) @map("position_y")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant       Restaurant             @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  diningArea       DiningArea?            @relation(fields: [diningAreaId], references: [id], onDelete: SetNull)
+  reservationLinks ReservationTable[]
+  combinationItems TableCombinationItem[]
+
+  @@index([tenantId, restaurantId, status])
+  @@map("restaurant_tables")
+}
+
+model TableCombination {
+  id            String   @id @default(cuid())
+  tenantId      String   @map("tenant_id")
+  restaurantId  String   @map("restaurant_id")
+  name          String
+  totalSeatsMin Int      @map("total_seats_min")
+  totalSeatsMax Int      @map("total_seats_max")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant             @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  items      TableCombinationItem[]
+
+  @@index([tenantId, restaurantId, isActive])
+  @@map("table_combinations")
+}
+
+model TableCombinationItem {
+  id            String   @id @default(cuid())
+  combinationId String   @map("combination_id")
+  tableId       String   @map("table_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  combination TableCombination @relation(fields: [combinationId], references: [id], onDelete: Cascade)
+  table       RestaurantTable  @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@unique([combinationId, tableId])
+  @@map("table_combination_items")
+}
+
+model Customer {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  firstName    String?  @map("first_name")
+  lastName     String?  @map("last_name")
+  phone        String
+  email        String?
+  notes        String?
+  tags         String[] @default([])
+  noShowCount  Int      @default(0) @map("no_show_count")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  reservations Reservation[]
+
+  @@unique([tenantId, restaurantId, phone])
+  @@map("customers")
+}
+
+model Reservation {
+  id              String            @id @default(cuid())
+  tenantId        String            @map("tenant_id")
+  restaurantId    String            @map("restaurant_id")
+  customerId      String?           @map("customer_id")
+  customerName    String            @map("customer_name")
+  customerPhone   String            @map("customer_phone")
+  customerEmail   String?           @map("customer_email")
+  partySize       Int               @map("party_size")
+  reservationDate DateTime          @map("reservation_date") @db.Date
+  startTime       String            @map("start_time")
+  endTime         String            @map("end_time")
+  source          ReservationSource @default(phone)
+  status          ReservationStatus @default(confirmed)
+  notes           String?
+  internalNotes   String?           @map("internal_notes")
+  createdByUserId String?           @map("created_by_user_id")
+  cancelledAt     DateTime?         @map("cancelled_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant         @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer      Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  createdByUser User?              @relation("ReservationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  tables        ReservationTable[]
+
+  @@index([tenantId, restaurantId, reservationDate, startTime])
+  @@index([tenantId, restaurantId, status])
+  @@map("reservations")
+}
+
+model ReservationTable {
+  id            String   @id @default(cuid())
+  reservationId String   @map("reservation_id")
+  tableId       String   @map("table_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  reservation Reservation     @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  table       RestaurantTable @relation(fields: [tableId], references: [id], onDelete: Restrict)
+
+  @@unique([reservationId, tableId])
+  @@index([tableId])
+  @@map("reservation_tables")
+}
+
+model OpeningHour {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  dayOfWeek    Int      @map("day_of_week")
+  openTime     String   @map("open_time")
+  closeTime    String   @map("close_time")
+  isClosed     Boolean  @default(false) @map("is_closed")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, restaurantId, dayOfWeek])
+  @@map("opening_hours")
+}
+
+model ServiceShift {
+  id                     String   @id @default(cuid())
+  tenantId               String   @map("tenant_id")
+  restaurantId           String   @map("restaurant_id")
+  name                   String
+  startTime              String   @map("start_time")
+  endTime                String   @map("end_time")
+  defaultDurationMinutes Int      @default(90) @map("default_duration_minutes")
+  slotIntervalMinutes    Int      @default(30) @map("slot_interval_minutes")
+  isActive               Boolean  @default(true) @map("is_active")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, restaurantId, isActive])
+  @@map("service_shifts")
+}
+
+model BlockedSlot {
+  id              String   @id @default(cuid())
+  tenantId        String   @map("tenant_id")
+  restaurantId    String   @map("restaurant_id")
+  startDatetime   DateTime @map("start_datetime")
+  endDatetime     DateTime @map("end_datetime")
+  reason          String
+  createdByUserId String?  @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  tenant        Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  createdByUser User?      @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, restaurantId, startDatetime, endDatetime])
+  @@map("blocked_slots")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String?  @map("restaurant_id")
+  userId       String?  @map("user_id")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  oldValue     Json?    @map("old_value")
+  newValue     Json?    @map("new_value")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, restaurantId, createdAt])
+  @@map("audit_logs")
+}
+
+model StaffMember {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  name         String
+  role         String
+  hourlyRate   Decimal? @map("hourly_rate") @db.Decimal(10, 2)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  shifts     StaffShift[]
+
+  @@index([tenantId, restaurantId, isActive])
+  @@map("staff_members")
+}
+
+model StaffShift {
+  id            String   @id @default(cuid())
+  restaurantId  String   @map("restaurant_id")
+  staffMemberId String   @map("staff_member_id")
+  startsAt      DateTime @map("starts_at")
+  endsAt        DateTime @map("ends_at")
+  label         String
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  restaurant  Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  staffMember StaffMember @relation(fields: [staffMemberId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, startsAt])
+  @@map("staff_shifts")
+}
+
+model Supplier {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  name         String
+  phone        String?
+  email        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant  Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  ingredients Ingredient[]
+
+  @@index([tenantId, restaurantId])
+  @@map("suppliers")
+}
+
+model Ingredient {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  supplierId   String?  @map("supplier_id")
+  name         String
+  category     String
+  unit         String   @default("kg")
+  stock        Decimal  @default(0) @db.Decimal(10, 2)
+  minStock     Decimal  @default(0) @map("min_stock") @db.Decimal(10, 2)
+  unitCost     Decimal  @default(0) @map("unit_cost") @db.Decimal(10, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant     Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  supplier       Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  stockMovements StockMovement[]
+
+  @@index([tenantId, restaurantId, name])
+  @@map("ingredients")
+}
+
+model StockMovement {
+  id           String            @id @default(cuid())
+  restaurantId String            @map("restaurant_id")
+  ingredientId String            @map("ingredient_id")
+  type         StockMovementType
+  quantity     Decimal           @db.Decimal(10, 2)
+  reason       String?
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, createdAt])
+  @@map("stock_movements")
+}
+
+model MenuCategory {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  name         String
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  items      MenuItem[]
+
+  @@index([tenantId, restaurantId])
+  @@map("menu_categories")
+}
+
+model MenuItem {
+  id           String   @id @default(cuid())
+  tenantId     String   @map("tenant_id")
+  restaurantId String   @map("restaurant_id")
+  categoryId   String?  @map("category_id")
+  name         String
+  description  String?
+  price        Decimal  @db.Decimal(10, 2)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  category   MenuCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, restaurantId, isActive])
+  @@map("menu_items")
+}
