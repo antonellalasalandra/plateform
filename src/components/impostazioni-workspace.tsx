@@ -1,20 +1,115 @@
 "use client";
 
-import { Clock, Save, Table2 } from "lucide-react";
+import { Clock, Plus, Save, Table2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Notice } from "@/components/notice";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { restaurant, roomTables } from "@/lib/demo-data";
+
+type DiningAreaConfig = {
+  id: string;
+  name: string;
+};
+
+type TableConfig = {
+  id: string;
+  areaId: string;
+  name: string;
+  seatsMin: number;
+  seatsMax: number;
+  positionX: number;
+  positionY: number;
+};
+
+const initialAreas: DiningAreaConfig[] = [{ id: "area-main", name: "Sala principale" }];
+
+const initialTables: TableConfig[] = roomTables.map((table) => ({
+  id: table.id,
+  areaId: "area-main",
+  name: table.name,
+  seatsMin: 1,
+  seatsMax: table.seats,
+  positionX: table.x,
+  positionY: table.y
+}));
 
 export function ImpostazioniWorkspace() {
   const [notice, setNotice] = useState("");
+  const [areas, setAreas] = useState<DiningAreaConfig[]>(initialAreas);
+  const [tables, setTables] = useState<TableConfig[]>(initialTables);
+
+  const totalSeats = tables.reduce((sum, table) => sum + table.seatsMax, 0);
 
   function saveSettings(formData: FormData) {
     const name = String(formData.get("name") || restaurant.name);
-    setNotice(`Impostazioni salvate per ${name}.`);
+    setNotice(`Impostazioni salvate per ${name}: ${areas.length} sale, ${tables.length} tavoli, ${totalSeats} coperti configurati.`);
+  }
+
+  function addArea() {
+    const nextIndex = areas.length + 1;
+    setAreas((current) => [...current, { id: crypto.randomUUID(), name: `Sala ${nextIndex}` }]);
+    setNotice(`Sala ${nextIndex} aggiunta.`);
+  }
+
+  function updateArea(areaId: string, name: string) {
+    setAreas((current) => current.map((area) => (area.id === areaId ? { ...area, name } : area)));
+  }
+
+  function removeArea(areaId: string) {
+    if (areas.length === 1) {
+      setNotice("Deve restare almeno una sala configurata.");
+      return;
+    }
+
+    const fallbackArea = areas.find((area) => area.id !== areaId);
+    setAreas((current) => current.filter((area) => area.id !== areaId));
+    setTables((current) => current.map((table) => (table.areaId === areaId ? { ...table, areaId: fallbackArea?.id ?? current[0]?.areaId ?? "area-main" } : table)));
+    setNotice("Sala rimossa. I tavoli sono stati spostati nella prima sala disponibile.");
+  }
+
+  function addTable() {
+    const nextIndex = tables.length + 1;
+    setTables((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        areaId: areas[0]?.id ?? "area-main",
+        name: `T${nextIndex}`,
+        seatsMin: 1,
+        seatsMax: 2,
+        positionX: 50,
+        positionY: 50
+      }
+    ]);
+    setNotice(`Tavolo T${nextIndex} aggiunto.`);
+  }
+
+  function updateTable(tableId: string, patch: Partial<TableConfig>) {
+    setTables((current) =>
+      current.map((table) => {
+        if (table.id !== tableId) return table;
+        const nextTable = { ...table, ...patch };
+        return {
+          ...nextTable,
+          seatsMin: clampNumber(nextTable.seatsMin, 1, 99),
+          seatsMax: Math.max(clampNumber(nextTable.seatsMax, 1, 99), clampNumber(nextTable.seatsMin, 1, 99)),
+          positionX: clampNumber(nextTable.positionX, 0, 100),
+          positionY: clampNumber(nextTable.positionY, 0, 100)
+        };
+      })
+    );
+  }
+
+  function removeTable(tableId: string) {
+    setTables((current) => current.filter((table) => table.id !== tableId));
+    setNotice("Tavolo rimosso dalla configurazione sala.");
+  }
+
+  function saveRoomLayout() {
+    setNotice(`Assetto sala salvato: ${areas.length} sale, ${tables.length} tavoli, ${totalSeats} coperti disponibili.`);
   }
 
   return (
@@ -126,21 +221,124 @@ export function ImpostazioniWorkspace() {
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Table2 className="size-5" />
-                Sala e tavoli
-              </CardTitle>
-              <CardDescription>Tavoli fisici e capienze usate nelle assegnazioni.</CardDescription>
+            <CardHeader className="flex flex-col gap-4 space-y-0 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="flex items-center gap-2">
+                  <Table2 className="size-5" />
+                  Sala e tavoli
+                </CardTitle>
+                <CardDescription>Tavoli fisici, sale e capienze usate nelle assegnazioni.</CardDescription>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" onClick={saveRoomLayout}>
+                  <Save className="size-5" />
+                  Salva assetto
+                </Button>
+                <Button type="button" variant="outline" onClick={addArea}>
+                  <Plus className="size-5" />
+                  Sala
+                </Button>
+                <Button type="button" onClick={addTable}>
+                  <Plus className="size-5" />
+                  Tavolo
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {roomTables.map((table) => (
-                  <div key={table.id} className="flex items-center justify-between rounded-[6px] border border-line px-4 py-3">
-                    <span className="font-extrabold">{table.name}</span>
-                    <span className="text-sm font-bold text-muted">{table.seats} coperti</span>
+              <div className="mb-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-[6px] border border-line bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-extrabold uppercase text-muted">Sale</p>
+                  <p className="mt-1 text-2xl font-extrabold">{areas.length}</p>
+                </div>
+                <div className="rounded-[6px] border border-line bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-extrabold uppercase text-muted">Tavoli</p>
+                  <p className="mt-1 text-2xl font-extrabold">{tables.length}</p>
+                </div>
+                <div className="rounded-[6px] border border-line bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-extrabold uppercase text-muted">Coperti reali</p>
+                  <p className="mt-1 text-2xl font-extrabold">{totalSeats}</p>
+                </div>
+              </div>
+
+              <div className="mb-5 space-y-3 rounded-[8px] border border-line p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-extrabold uppercase text-muted">Sale</h3>
+                  <span className="text-xs font-bold text-muted">Il nome sala viene usato per organizzare i tavoli.</span>
+                </div>
+                {areas.map((area) => (
+                  <div key={area.id} className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                    <label className="space-y-1">
+                      <span className="text-xs font-bold text-muted">Nome sala</span>
+                      <Input value={area.name} onChange={(event) => updateArea(area.id, event.target.value)} />
+                    </label>
+                    <Button type="button" variant="outline" className="self-end px-3" onClick={() => removeArea(area.id)} aria-label={`Rimuovi ${area.name}`}>
+                      <Trash2 className="size-5" />
+                    </Button>
                   </div>
                 ))}
+              </div>
+
+              <div className="overflow-x-auto thin-scrollbar">
+                <div className="min-w-[760px] space-y-3">
+                  <div className="grid grid-cols-[1fr_1.3fr_0.8fr_0.8fr_0.8fr_0.8fr_auto] gap-2 px-1 text-xs font-extrabold uppercase text-muted">
+                    <span>Tavolo</span>
+                    <span>Sala</span>
+                    <span>Min</span>
+                    <span>Max</span>
+                    <span>X</span>
+                    <span>Y</span>
+                    <span />
+                  </div>
+                  {tables.map((table) => (
+                    <div key={table.id} className="grid grid-cols-[1fr_1.3fr_0.8fr_0.8fr_0.8fr_0.8fr_auto] gap-2 rounded-[6px] border border-line p-2">
+                      <Input value={table.name} aria-label="Nome tavolo" onChange={(event) => updateTable(table.id, { name: event.target.value })} />
+                      <Select value={table.areaId} aria-label="Sala tavolo" onChange={(event) => updateTable(table.id, { areaId: event.target.value })}>
+                        {areas.map((area) => (
+                          <option key={area.id} value={area.id}>
+                            {area.name}
+                          </option>
+                        ))}
+                      </Select>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={table.seatsMin}
+                        aria-label="Coperti minimi"
+                        onChange={(event) => updateTable(table.id, { seatsMin: numberFromInput(event.currentTarget.value, table.seatsMin) })}
+                      />
+                      <Input
+                        type="number"
+                        min={1}
+                        value={table.seatsMax}
+                        aria-label="Coperti massimi"
+                        onChange={(event) => updateTable(table.id, { seatsMax: numberFromInput(event.currentTarget.value, table.seatsMax) })}
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={table.positionX}
+                        aria-label="Posizione X"
+                        onChange={(event) => updateTable(table.id, { positionX: numberFromInput(event.currentTarget.value, table.positionX) })}
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={table.positionY}
+                        aria-label="Posizione Y"
+                        onChange={(event) => updateTable(table.id, { positionY: numberFromInput(event.currentTarget.value, table.positionY) })}
+                      />
+                      <Button type="button" variant="outline" className="px-3" onClick={() => removeTable(table.id)} aria-label={`Rimuovi ${table.name}`}>
+                        <Trash2 className="size-5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[6px] border border-dashed border-line bg-slate-50 px-4 py-3 text-sm font-semibold text-muted">
+                X e Y sono coordinate percentuali della piantina: servono a posizionare i tavoli nella vista Sala live.
               </div>
             </CardContent>
           </Card>
@@ -148,4 +346,13 @@ export function ImpostazioniWorkspace() {
       </div>
     </>
   );
+}
+
+function numberFromInput(value: string, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(Math.round(value), min), max);
 }
