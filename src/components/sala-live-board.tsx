@@ -1,7 +1,20 @@
+"use client";
+
 import { Armchair, CircleAlert, Clock, Phone, User } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { roomTables, reservations } from "@/lib/demo-data";
+import { readStoredRoomLayout, ROOM_LAYOUT_EVENT, type StoredRoomLayout } from "@/lib/room-layout-storage";
 import { cn } from "@/lib/utils";
+
+type LiveRoomTable = {
+  id: string;
+  name: string;
+  seats: number;
+  status: string;
+  x: number;
+  y: number;
+};
 
 const statusClass = {
   available: "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300",
@@ -16,11 +29,53 @@ const statusLabel = {
 };
 
 export function SalaLiveBoard() {
+  const [layout, setLayout] = useState<StoredRoomLayout | null>(null);
+
+  useEffect(() => {
+    setLayout(readStoredRoomLayout());
+
+    function syncLayout() {
+      setLayout(readStoredRoomLayout());
+    }
+
+    window.addEventListener("storage", syncLayout);
+    window.addEventListener(ROOM_LAYOUT_EVENT, syncLayout);
+
+    return () => {
+      window.removeEventListener("storage", syncLayout);
+      window.removeEventListener(ROOM_LAYOUT_EVENT, syncLayout);
+    };
+  }, []);
+
+  const liveTables = useMemo(() => {
+    if (!layout?.tables.length) return roomTables;
+
+    return layout.tables.map((table) => {
+      const demoTable = roomTables.find((item) => item.name.toLowerCase() === table.name.toLowerCase());
+      const hasReservation = reservations.some((reservation) => reservation.tableNames.includes(table.name));
+
+      return {
+        id: table.id,
+        name: table.name,
+        seats: table.seatsMax,
+        status: demoTable?.status ?? (hasReservation ? "reserved" : "available"),
+        x: table.positionX,
+        y: table.positionY
+      } satisfies LiveRoomTable;
+    });
+  }, [layout]);
+
   return (
     <div className="relative isolate overflow-visible rounded-[8px] border border-line bg-slate-50">
-      <div className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:90px_90px]" />
+      {layout?.floorPlan ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-cover bg-center opacity-55"
+          style={{ backgroundImage: `url(${layout.floorPlan.dataUrl})` }}
+        />
+      ) : null}
+      <div className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:90px_90px] opacity-80" />
       <div className="relative h-[560px] min-w-[900px]">
-        {roomTables.map((table) => {
+        {liveTables.map((table) => {
           const reservation = reservations.find((item) => item.tableNames.includes(table.name));
 
           return (

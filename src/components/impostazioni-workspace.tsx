@@ -1,28 +1,23 @@
 "use client";
 
-import { Clock, Plus, Save, Table2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { Clock, FileImage, Plus, Save, Sparkles, Table2, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Notice } from "@/components/notice";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { restaurant, roomTables } from "@/lib/demo-data";
+import {
+  readStoredRoomLayout,
+  type StoredDiningArea,
+  type StoredFloorPlan,
+  type StoredRoomTable,
+  writeStoredRoomLayout
+} from "@/lib/room-layout-storage";
 
-type DiningAreaConfig = {
-  id: string;
-  name: string;
-};
-
-type TableConfig = {
-  id: string;
-  areaId: string;
-  name: string;
-  seatsMin: number;
-  seatsMax: number;
-  positionX: number;
-  positionY: number;
-};
+type DiningAreaConfig = StoredDiningArea;
+type TableConfig = StoredRoomTable;
 
 const initialAreas: DiningAreaConfig[] = [{ id: "area-main", name: "Sala principale" }];
 
@@ -40,11 +35,29 @@ export function ImpostazioniWorkspace() {
   const [notice, setNotice] = useState("");
   const [areas, setAreas] = useState<DiningAreaConfig[]>(initialAreas);
   const [tables, setTables] = useState<TableConfig[]>(initialTables);
+  const [floorPlan, setFloorPlan] = useState<StoredFloorPlan | null>(null);
+  const [isAnalyzingPlan, setIsAnalyzingPlan] = useState(false);
 
   const totalSeats = tables.reduce((sum, table) => sum + table.seatsMax, 0);
+  const floorPlanAspect = useMemo(() => {
+    if (!floorPlan) return "";
+    return `${floorPlan.width} x ${floorPlan.height}px`;
+  }, [floorPlan]);
+
+  useEffect(() => {
+    const storedLayout = readStoredRoomLayout();
+    if (!storedLayout) return;
+    if (storedLayout.areas.length) setAreas(storedLayout.areas);
+    if (storedLayout.tables.length) setTables(storedLayout.tables);
+    setFloorPlan(storedLayout.floorPlan);
+  }, []);
 
   function saveSettings(formData: FormData) {
     const name = String(formData.get("name") || restaurant.name);
+    if (!persistRoomLayout(areas, tables, floorPlan)) {
+      setNotice("Impostazioni aggiornate in pagina, ma il browser non ha spazio per salvare la planimetria.");
+      return;
+    }
     setNotice(`Impostazioni salvate per ${name}: ${areas.length} sale, ${tables.length} tavoli, ${totalSeats} coperti configurati.`);
   }
 
@@ -109,7 +122,70 @@ export function ImpostazioniWorkspace() {
   }
 
   function saveRoomLayout() {
+    if (!persistRoomLayout(areas, tables, floorPlan)) {
+      setNotice("Assetto aggiornato in pagina, ma il browser non ha spazio per salvare la planimetria.");
+      return;
+    }
     setNotice(`Assetto sala salvato: ${areas.length} sale, ${tables.length} tavoli, ${totalSeats} coperti disponibili.`);
+  }
+
+  async function importFloorPlan(file: File | undefined) {
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setNotice("Carica una planimetria in formato immagine: PNG, JPG o WebP.");
+      return;
+    }
+
+    setIsAnalyzingPlan(true);
+
+    try {
+      const analyzedImage = await readAndNormalizeImage(file);
+      const nextFloorPlan: StoredFloorPlan = {
+        name: file.name,
+        dataUrl: analyzedImage.dataUrl,
+        width: analyzedImage.width,
+        height: analyzedImage.height,
+        analyzedAt: new Date().toISOString()
+      };
+      const nextTables = translatePlanToLiveRoom(tables, analyzedImage.width, analyzedImage.height);
+
+      setFloorPlan(nextFloorPlan);
+      setTables(nextTables);
+      if (!persistRoomLayout(areas, nextTables, nextFloorPlan)) {
+        setNotice("Planimetria analizzata, ma il browser non ha spazio per salvarla. Prova con un'immagine più leggera.");
+        return;
+      }
+      setNotice(`Planimetria analizzata: ${file.name}. ${nextTables.length} tavoli tradotti nella Sala live.`);
+    } catch {
+      setNotice("Non sono riuscito ad analizzare questa planimetria. Prova con un'immagine PNG, JPG o WebP.");
+    } finally {
+      setIsAnalyzingPlan(false);
+    }
+  }
+
+  function analyzeCurrentFloorPlan() {
+    if (!floorPlan) {
+      setNotice("Carica prima una planimetria.");
+      return;
+    }
+
+    const nextTables = translatePlanToLiveRoom(tables, floorPlan.width, floorPlan.height);
+    setTables(nextTables);
+    if (!persistRoomLayout(areas, nextTables, floorPlan)) {
+      setNotice("Analisi aggiornata in pagina, ma il browser non ha spazio per salvarla.");
+      return;
+    }
+    setNotice(`Analisi aggiornata: ${nextTables.length} tavoli riposizionati sulla planimetria.`);
+  }
+
+  function removeFloorPlan() {
+    setFloorPlan(null);
+    if (!persistRoomLayout(areas, tables, null)) {
+      setNotice("Planimetria rimossa in pagina, ma il browser non ha aggiornato il salvataggio locale.");
+      return;
+    }
+    setNotice("Planimetria rimossa dalla Sala live.");
   }
 
   return (
@@ -245,6 +321,84 @@ export function ImpostazioniWorkspace() {
               </div>
             </CardHeader>
             <CardContent>
+              <div className="mb-5 grid gap-4 rounded-[8px] border border-line bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-base font-extrabold">
+                      <FileImage className="size-5" />
+                      Importa planimetria
+                    </h3>
+                    <p className="mt-1 text-sm font-semibold text-muted">
+                      Carica un'immagine della sala: l'analisi la usa come base e traduce i tavoli nella mappa live.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
+                      <FileImage className="size-5" />
+                      Carica immagine
+                      <input
+                        className="sr-only"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(event) => {
+                          void importFloorPlan(event.currentTarget.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    <Button type="button" variant="outline" onClick={analyzeCurrentFloorPlan} disabled={!floorPlan || isAnalyzingPlan}>
+                      <Sparkles className="size-5" />
+                      Analizza
+                    </Button>
+                  </div>
+                </div>
+
+                {floorPlan ? (
+                  <div className="grid gap-4 xl:grid-cols-[1fr_260px]">
+                    <div className="relative h-64 overflow-hidden rounded-[8px] border border-line bg-white">
+                      <div
+                        className="absolute inset-0 bg-cover bg-center opacity-70"
+                        style={{ backgroundImage: `url(${floorPlan.dataUrl})` }}
+                      />
+                      <div className="absolute inset-0 bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:54px_54px] opacity-70" />
+                      {tables.map((table) => (
+                        <div
+                          key={table.id}
+                          className="absolute grid size-12 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[8px] border border-emerald-300 bg-white/90 text-xs font-extrabold text-emerald-800 shadow-sm"
+                          style={{ left: `${table.positionX}%`, top: `${table.positionY}%` }}
+                        >
+                          {table.name}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="space-y-3 rounded-[8px] border border-line bg-white p-4">
+                      <div>
+                        <p className="text-xs font-extrabold uppercase text-muted">File analizzato</p>
+                        <p className="mt-1 break-words text-sm font-extrabold">{floorPlan.name}</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded-[6px] bg-slate-50 p-3">
+                          <p className="text-xs font-bold text-muted">Formato</p>
+                          <p className="text-sm font-extrabold">{floorPlanAspect}</p>
+                        </div>
+                        <div className="rounded-[6px] bg-slate-50 p-3">
+                          <p className="text-xs font-bold text-muted">Tradotti</p>
+                          <p className="text-sm font-extrabold">{tables.length} tavoli</p>
+                        </div>
+                      </div>
+                      <Button type="button" variant="outline" className="w-full" onClick={removeFloorPlan}>
+                        <Trash2 className="size-5" />
+                        Rimuovi planimetria
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[8px] border border-dashed border-line bg-white px-4 py-8 text-center text-sm font-semibold text-muted">
+                    Nessuna planimetria caricata. Dopo l'import, la stessa base verrà usata nella Sala live.
+                  </div>
+                )}
+              </div>
+
               <div className="mb-4 grid gap-3 sm:grid-cols-3">
                 <div className="rounded-[6px] border border-line bg-slate-50 px-4 py-3">
                   <p className="text-xs font-extrabold uppercase text-muted">Sale</p>
@@ -355,4 +509,88 @@ function numberFromInput(value: string, fallback: number) {
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(Math.round(value), min), max);
+}
+
+function persistRoomLayout(areas: DiningAreaConfig[], tables: TableConfig[], floorPlan: StoredFloorPlan | null) {
+  return writeStoredRoomLayout({ areas, tables, floorPlan });
+}
+
+function translatePlanToLiveRoom(tables: TableConfig[], width: number, height: number) {
+  const count = Math.max(tables.length, 1);
+  const aspectRatio = width / Math.max(height, 1);
+  const columns = Math.min(count, Math.max(2, Math.ceil(Math.sqrt(count * aspectRatio))));
+  const rows = Math.ceil(count / columns);
+  const horizontalPadding = aspectRatio >= 1 ? 12 : 18;
+  const verticalPadding = aspectRatio >= 1 ? 18 : 12;
+  const usableWidth = 100 - horizontalPadding * 2;
+  const usableHeight = 100 - verticalPadding * 2;
+
+  return tables
+    .slice()
+    .sort((a, b) => tableSortValue(a.name) - tableSortValue(b.name))
+    .map((table, index) => {
+      const col = index % columns;
+      const row = Math.floor(index / columns);
+      const stagger = rows > 1 && row % 2 === 1 ? usableWidth / columns / 2 : 0;
+      const positionX = horizontalPadding + ((col + 0.5) * usableWidth) / columns + stagger;
+      const positionY = verticalPadding + ((row + 0.5) * usableHeight) / rows;
+
+      return {
+        ...table,
+        positionX: clampNumber(positionX, 8, 92),
+        positionY: clampNumber(positionY, 10, 90)
+      };
+    });
+}
+
+function tableSortValue(name: string) {
+  const match = name.match(/\d+/);
+  return match ? Number(match[0]) : Number.MAX_SAFE_INTEGER;
+}
+
+async function readAndNormalizeImage(file: File) {
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(sourceDataUrl);
+  const maxSide = 1600;
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  const scale = Math.min(1, maxSide / Math.max(width, height));
+
+  if (scale === 1) {
+    return { dataUrl: sourceDataUrl, width, height };
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const context = canvas.getContext("2d");
+  if (!context) return { dataUrl: sourceDataUrl, width, height };
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  return {
+    dataUrl: canvas.toDataURL("image/jpeg", 0.86),
+    width: canvas.width,
+    height: canvas.height
+  };
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(dataUrl: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
 }
