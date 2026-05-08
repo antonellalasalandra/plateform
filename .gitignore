@@ -9,3 +9,4 @@ node_modules
 prisma/migrations
 *.log
 *.bundle
+tsconfig.tsbuildinfo
