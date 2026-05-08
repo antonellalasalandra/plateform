@@ -1,9 +1,9 @@
+import Link from "next/link";
 import { ArrowRight, CalendarDays, TrendingUp, UserPlus, Users } from "lucide-react";
 import { BarMetricChart, TrendChart } from "@/components/charts";
 import { MetricCard } from "@/components/metric-card";
 import { PageHeader } from "@/components/page-header";
 import { RoomBoard } from "@/components/room-board";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Segment, Segmented } from "@/components/ui/tabs";
 import { coverAverageByDay, reservationTrend, reservations, restaurant } from "@/lib/demo-data";
@@ -44,14 +44,20 @@ export default function PanoramicaPage() {
           </div>
           <div className="min-w-[280px]">
             <div className="mb-3 flex justify-end gap-2">
-              <Button>
+              <Link
+                href="/prenotazioni?modal=walkin"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              >
                 <UserPlus className="size-5" />
                 Walk-in
-              </Button>
-              <Button variant="outline">
+              </Link>
+              <Link
+                href="/sala-live"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-[6px] border border-line bg-white px-4 text-sm font-semibold text-ink transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              >
                 Vedi
                 <ArrowRight className="size-5" />
-              </Button>
+              </Link>
             </div>
             <div className="h-4 rounded-full bg-slate-100">
               <div className="h-4 rounded-full bg-ink" style={{ width: `${occupancy}%` }} />

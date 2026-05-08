@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Banknote, CalendarDays, ChefHat, LayoutDashboard, Package, Settings, Users } from "lucide-react";
+import { Armchair, Banknote, CalendarDays, ChefHat, LayoutDashboard, Package, Settings, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/panoramica", label: "Panoramica", icon: LayoutDashboard },
+  { href: "/sala-live", label: "Sala live", icon: Armchair },
   { href: "/fatturato", label: "Fatturato", icon: Banknote },
   { href: "/prenotazioni", label: "Prenotazioni", icon: CalendarDays },
   { href: "/personale", label: "Personale", icon: Users },

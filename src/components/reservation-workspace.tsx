@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarPlus, Search, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -31,6 +31,15 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [modal, setModal] = useState<"reservation" | "walkin" | null>(null);
+
+  useEffect(() => {
+    const requestedModal = new URLSearchParams(window.location.search).get("modal");
+
+    if (requestedModal === "walkin" || requestedModal === "reservation") {
+      setModal(requestedModal);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
 
   const filteredReservations = useMemo(() => {
     return reservations.filter((reservation) => {
