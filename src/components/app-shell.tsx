@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
-import { LogOut, Menu as MenuIcon, PanelLeft } from "lucide-react";
+import { LogOut, PanelLeft } from "lucide-react";
+import { MobileMenu } from "@/components/mobile-menu";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { appUser } from "@/lib/demo-data";
 
@@ -23,9 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <header className="fixed left-0 right-0 top-0 z-20 flex h-[76px] items-center justify-between border-b border-line bg-white px-5 lg:left-[280px] lg:px-8">
         <div className="flex items-center gap-4">
-          <button className="grid size-10 place-items-center rounded-[6px] border border-line bg-white lg:hidden" aria-label="Apri menu">
-            <MenuIcon className="size-5" />
-          </button>
+          <MobileMenu />
           <PanelLeft className="hidden size-5 text-ink lg:block" />
           <span className="text-base font-extrabold">Gestionale</span>
         </div>

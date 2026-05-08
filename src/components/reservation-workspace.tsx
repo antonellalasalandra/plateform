@@ -31,6 +31,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [modal, setModal] = useState<"reservation" | "walkin" | null>(null);
+  const [selectedReservation, setSelectedReservation] = useState<ReservationRow | null>(null);
 
   useEffect(() => {
     const requestedModal = new URLSearchParams(window.location.search).get("modal");
@@ -71,6 +72,13 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
 
     setReservations((current) => [newReservation, ...current]);
     setModal(null);
+  }
+
+  function updateReservationStatus(id: string, nextStatus: ReservationStatus) {
+    setReservations((current) =>
+      current.map((reservation) => (reservation.id === id ? { ...reservation, status: nextStatus } : reservation))
+    );
+    setSelectedReservation((current) => (current?.id === id ? { ...current, status: nextStatus } : current));
   }
 
   return (
@@ -137,7 +145,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                       </span>
                     </td>
                     <td className="px-4 py-4 text-right">
-                      <Button variant="outline" className="h-9 px-3">
+                      <Button variant="outline" className="h-9 px-3" onClick={() => setSelectedReservation(reservation)}>
                         Vedi
                       </Button>
                     </td>
@@ -218,6 +226,56 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
               <Button type="submit">Conferma</Button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {selectedReservation ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
+          <div className="w-full max-w-[560px] rounded-[8px] border border-line bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-extrabold">{selectedReservation.customerName}</h2>
+                <p className="text-sm font-semibold text-muted">
+                  {selectedReservation.date} · {selectedReservation.startTime}-{selectedReservation.endTime}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="grid size-10 place-items-center rounded-[6px] border border-line"
+                onClick={() => setSelectedReservation(null)}
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <div className="grid gap-3 rounded-[8px] border border-line bg-slate-50 p-4 text-sm font-semibold">
+              <p>
+                Telefono: <span className="font-extrabold">{selectedReservation.customerPhone}</span>
+              </p>
+              <p>
+                Coperti: <span className="font-extrabold">{selectedReservation.partySize}</span>
+              </p>
+              <p>
+                Tavolo: <span className="font-extrabold">{selectedReservation.tableNames.join(", ")}</span>
+              </p>
+              <p>
+                Origine: <span className="font-extrabold">{selectedReservation.source}</span>
+              </p>
+              <p>
+                Stato: <span className="font-extrabold">{statusLabel[selectedReservation.status]}</span>
+              </p>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <Button variant="outline" onClick={() => updateReservationStatus(selectedReservation.id, "cancelled")}>
+                Cancella
+              </Button>
+              <Button variant="outline" onClick={() => updateReservationStatus(selectedReservation.id, "seated")}>
+                Segna in sala
+              </Button>
+              <Button onClick={() => updateReservationStatus(selectedReservation.id, "completed")}>Completa</Button>
+            </div>
+          </div>
         </div>
       ) : null}
     </>

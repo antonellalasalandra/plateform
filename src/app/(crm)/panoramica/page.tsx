@@ -2,10 +2,10 @@ import Link from "next/link";
 import { ArrowRight, CalendarDays, TrendingUp, UserPlus, Users } from "lucide-react";
 import { BarMetricChart, TrendChart } from "@/components/charts";
 import { MetricCard } from "@/components/metric-card";
+import { OverviewRangeControl } from "@/components/overview-range-control";
 import { PageHeader } from "@/components/page-header";
 import { RoomBoard } from "@/components/room-board";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Segment, Segmented } from "@/components/ui/tabs";
 import { coverAverageByDay, reservationTrend, reservations, restaurant } from "@/lib/demo-data";
 
 export default function PanoramicaPage() {
@@ -18,14 +18,7 @@ export default function PanoramicaPage() {
       <PageHeader
         title="Panoramica"
         description="Andamento delle prenotazioni e statistiche del locale."
-        actions={
-          <Segmented>
-            <Segment>Oggi</Segment>
-            <Segment>7 giorni</Segment>
-            <Segment active>30 giorni</Segment>
-            <Segment>90 giorni</Segment>
-          </Segmented>
-        }
+        actions={<OverviewRangeControl />}
       />
 
       <section className="mb-7 rounded-[8px] border border-slate-300 bg-white p-6 shadow-plate">
