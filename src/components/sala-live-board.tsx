@@ -17,8 +17,8 @@ const statusLabel = {
 
 export function SalaLiveBoard() {
   return (
-    <div className="relative overflow-hidden rounded-[8px] border border-line bg-slate-50">
-      <div className="absolute inset-0 bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:90px_90px]" />
+    <div className="relative isolate overflow-visible rounded-[8px] border border-line bg-slate-50">
+      <div className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:90px_90px]" />
       <div className="relative h-[560px] min-w-[900px]">
         {roomTables.map((table) => {
           const reservation = reservations.find((item) => item.tableNames.includes(table.name));
@@ -26,7 +26,7 @@ export function SalaLiveBoard() {
           return (
             <div
               key={table.id}
-              className="group absolute -translate-x-1/2 -translate-y-1/2"
+              className="group absolute z-10 -translate-x-1/2 -translate-y-1/2 hover:z-50 focus-within:z-50"
               style={{ left: `${table.x}%`, top: `${table.y}%` }}
             >
               <button
@@ -42,7 +42,7 @@ export function SalaLiveBoard() {
                 <span className="mt-2 text-sm font-extrabold opacity-75">{table.seats} cop.</span>
               </button>
 
-              <div className="pointer-events-none absolute left-1/2 top-[calc(100%+12px)] z-20 w-[260px] -translate-x-1/2 rounded-[8px] border border-line bg-white p-4 text-left text-ink opacity-0 shadow-xl transition group-hover:opacity-100 group-focus-within:opacity-100">
+              <div className="pointer-events-none absolute left-1/2 top-[calc(100%+12px)] z-[100] w-[260px] -translate-x-1/2 rounded-[8px] border border-line bg-white p-4 text-left text-ink opacity-0 shadow-2xl ring-1 ring-black/5 transition group-hover:opacity-100 group-focus-within:opacity-100">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <p className="text-base font-extrabold">{table.name}</p>
                   <Badge>{statusLabel[table.status as keyof typeof statusLabel]}</Badge>
