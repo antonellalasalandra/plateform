@@ -35,26 +35,31 @@ export function ImpostazioniWorkspace() {
   const [notice, setNotice] = useState("");
   const [areas, setAreas] = useState<DiningAreaConfig[]>(initialAreas);
   const [tables, setTables] = useState<TableConfig[]>(initialTables);
-  const [floorPlan, setFloorPlan] = useState<StoredFloorPlan | null>(null);
+  const [floorPlans, setFloorPlans] = useState<StoredFloorPlan[]>([]);
+  const [selectedFloorPlanAreaId, setSelectedFloorPlanAreaId] = useState(initialAreas[0].id);
   const [isAnalyzingPlan, setIsAnalyzingPlan] = useState(false);
 
   const totalSeats = tables.reduce((sum, table) => sum + table.seatsMax, 0);
+  const selectedFloorPlanArea = areas.find((area) => area.id === selectedFloorPlanAreaId) ?? areas[0];
+  const activeFloorPlan = floorPlans.find((plan) => plan.areaId === selectedFloorPlanAreaId) ?? null;
+  const activeAreaTables = tables.filter((table) => table.areaId === selectedFloorPlanAreaId);
   const floorPlanAspect = useMemo(() => {
-    if (!floorPlan) return "";
-    return `${floorPlan.width} x ${floorPlan.height}px`;
-  }, [floorPlan]);
+    if (!activeFloorPlan) return "";
+    return `${activeFloorPlan.width} x ${activeFloorPlan.height}px`;
+  }, [activeFloorPlan]);
 
   useEffect(() => {
     const storedLayout = readStoredRoomLayout();
     if (!storedLayout) return;
     if (storedLayout.areas.length) setAreas(storedLayout.areas);
     if (storedLayout.tables.length) setTables(storedLayout.tables);
-    setFloorPlan(storedLayout.floorPlan);
+    setFloorPlans(storedLayout.floorPlans);
+    setSelectedFloorPlanAreaId(storedLayout.areas[0]?.id ?? initialAreas[0].id);
   }, []);
 
   function saveSettings(formData: FormData) {
     const name = String(formData.get("name") || restaurant.name);
-    if (!persistRoomLayout(areas, tables, floorPlan)) {
+    if (!persistRoomLayout(areas, tables, floorPlans)) {
       setNotice("Impostazioni aggiornate in pagina, ma il browser non ha spazio per salvare la planimetria.");
       return;
     }
@@ -63,7 +68,9 @@ export function ImpostazioniWorkspace() {
 
   function addArea() {
     const nextIndex = areas.length + 1;
-    setAreas((current) => [...current, { id: crypto.randomUUID(), name: `Sala ${nextIndex}` }]);
+    const nextArea = { id: crypto.randomUUID(), name: `Sala ${nextIndex}` };
+    setAreas((current) => [...current, nextArea]);
+    setSelectedFloorPlanAreaId(nextArea.id);
     setNotice(`Sala ${nextIndex} aggiunta.`);
   }
 
@@ -80,6 +87,8 @@ export function ImpostazioniWorkspace() {
     const fallbackArea = areas.find((area) => area.id !== areaId);
     setAreas((current) => current.filter((area) => area.id !== areaId));
     setTables((current) => current.map((table) => (table.areaId === areaId ? { ...table, areaId: fallbackArea?.id ?? current[0]?.areaId ?? "area-main" } : table)));
+    setFloorPlans((current) => current.filter((plan) => plan.areaId !== areaId));
+    setSelectedFloorPlanAreaId((current) => (current === areaId ? fallbackArea?.id ?? "area-main" : current));
     setNotice("Sala rimossa. I tavoli sono stati spostati nella prima sala disponibile.");
   }
 
@@ -89,7 +98,7 @@ export function ImpostazioniWorkspace() {
       ...current,
       {
         id: crypto.randomUUID(),
-        areaId: areas[0]?.id ?? "area-main",
+        areaId: selectedFloorPlanAreaId || areas[0]?.id || "area-main",
         name: `T${nextIndex}`,
         seatsMin: 1,
         seatsMax: 2,
@@ -122,7 +131,7 @@ export function ImpostazioniWorkspace() {
   }
 
   function saveRoomLayout() {
-    if (!persistRoomLayout(areas, tables, floorPlan)) {
+    if (!persistRoomLayout(areas, tables, floorPlans)) {
       setNotice("Assetto aggiornato in pagina, ma il browser non ha spazio per salvare la planimetria.");
       return;
     }
@@ -142,21 +151,25 @@ export function ImpostazioniWorkspace() {
     try {
       const analyzedImage = await readAndNormalizeImage(file);
       const nextFloorPlan: StoredFloorPlan = {
+        id: activeFloorPlan?.id ?? crypto.randomUUID(),
+        areaId: selectedFloorPlanAreaId,
         name: file.name,
         dataUrl: analyzedImage.dataUrl,
         width: analyzedImage.width,
         height: analyzedImage.height,
         analyzedAt: new Date().toISOString()
       };
-      const nextTables = translatePlanToLiveRoom(tables, analyzedImage.width, analyzedImage.height);
+      const translatedTables = translatePlanToLiveRoom(activeAreaTables, analyzedImage.width, analyzedImage.height);
+      const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
+      const nextFloorPlans = replaceFloorPlan(floorPlans, nextFloorPlan);
 
-      setFloorPlan(nextFloorPlan);
+      setFloorPlans(nextFloorPlans);
       setTables(nextTables);
-      if (!persistRoomLayout(areas, nextTables, nextFloorPlan)) {
+      if (!persistRoomLayout(areas, nextTables, nextFloorPlans)) {
         setNotice("Planimetria analizzata, ma il browser non ha spazio per salvarla. Prova con un'immagine più leggera.");
         return;
       }
-      setNotice(`Planimetria analizzata: ${file.name}. ${nextTables.length} tavoli tradotti nella Sala live.`);
+      setNotice(`Planimetria analizzata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli tradotti nella Sala live.`);
     } catch {
       setNotice("Non sono riuscito ad analizzare questa planimetria. Prova con un'immagine PNG, JPG o WebP.");
     } finally {
@@ -165,27 +178,29 @@ export function ImpostazioniWorkspace() {
   }
 
   function analyzeCurrentFloorPlan() {
-    if (!floorPlan) {
-      setNotice("Carica prima una planimetria.");
+    if (!activeFloorPlan) {
+      setNotice("Carica prima una planimetria per questa sala.");
       return;
     }
 
-    const nextTables = translatePlanToLiveRoom(tables, floorPlan.width, floorPlan.height);
+    const translatedTables = translatePlanToLiveRoom(activeAreaTables, activeFloorPlan.width, activeFloorPlan.height);
+    const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
     setTables(nextTables);
-    if (!persistRoomLayout(areas, nextTables, floorPlan)) {
+    if (!persistRoomLayout(areas, nextTables, floorPlans)) {
       setNotice("Analisi aggiornata in pagina, ma il browser non ha spazio per salvarla.");
       return;
     }
-    setNotice(`Analisi aggiornata: ${nextTables.length} tavoli riposizionati sulla planimetria.`);
+    setNotice(`Analisi aggiornata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli riposizionati.`);
   }
 
   function removeFloorPlan() {
-    setFloorPlan(null);
-    if (!persistRoomLayout(areas, tables, null)) {
+    const nextFloorPlans = floorPlans.filter((plan) => plan.areaId !== selectedFloorPlanAreaId);
+    setFloorPlans(nextFloorPlans);
+    if (!persistRoomLayout(areas, tables, nextFloorPlans)) {
       setNotice("Planimetria rimossa in pagina, ma il browser non ha aggiornato il salvataggio locale.");
       return;
     }
-    setNotice("Planimetria rimossa dalla Sala live.");
+    setNotice(`Planimetria rimossa da ${selectedFloorPlanArea?.name ?? "questa sala"}.`);
   }
 
   return (
@@ -329,10 +344,22 @@ export function ImpostazioniWorkspace() {
                       Importa planimetria
                     </h3>
                     <p className="mt-1 text-sm font-semibold text-muted">
-                      Carica un'immagine della sala: l'analisi la usa come base e traduce i tavoli nella mappa live.
+                      Carica una planimetria per ogni sala: la Sala live userà la planimetria e i tavoli della sala selezionata.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <Select
+                      className="min-w-[190px]"
+                      value={selectedFloorPlanAreaId}
+                      aria-label="Sala planimetria"
+                      onChange={(event) => setSelectedFloorPlanAreaId(event.target.value)}
+                    >
+                      {areas.map((area) => (
+                        <option key={area.id} value={area.id}>
+                          {area.name}
+                        </option>
+                      ))}
+                    </Select>
                     <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
                       <FileImage className="size-5" />
                       Carica immagine
@@ -346,22 +373,22 @@ export function ImpostazioniWorkspace() {
                         }}
                       />
                     </label>
-                    <Button type="button" variant="outline" onClick={analyzeCurrentFloorPlan} disabled={!floorPlan || isAnalyzingPlan}>
+                    <Button type="button" variant="outline" onClick={analyzeCurrentFloorPlan} disabled={!activeFloorPlan || isAnalyzingPlan}>
                       <Sparkles className="size-5" />
                       Analizza
                     </Button>
                   </div>
                 </div>
 
-                {floorPlan ? (
+                {activeFloorPlan ? (
                   <div className="grid gap-4 xl:grid-cols-[1fr_260px]">
                     <div className="relative h-64 overflow-hidden rounded-[8px] border border-line bg-white">
                       <div
                         className="absolute inset-0 bg-cover bg-center opacity-70"
-                        style={{ backgroundImage: `url(${floorPlan.dataUrl})` }}
+                        style={{ backgroundImage: `url(${activeFloorPlan.dataUrl})` }}
                       />
                       <div className="absolute inset-0 bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:54px_54px] opacity-70" />
-                      {tables.map((table) => (
+                      {activeAreaTables.map((table) => (
                         <div
                           key={table.id}
                           className="absolute grid size-12 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[8px] border border-emerald-300 bg-white/90 text-xs font-extrabold text-emerald-800 shadow-sm"
@@ -373,8 +400,9 @@ export function ImpostazioniWorkspace() {
                     </div>
                     <div className="space-y-3 rounded-[8px] border border-line bg-white p-4">
                       <div>
-                        <p className="text-xs font-extrabold uppercase text-muted">File analizzato</p>
-                        <p className="mt-1 break-words text-sm font-extrabold">{floorPlan.name}</p>
+                        <p className="text-xs font-extrabold uppercase text-muted">Sala e file analizzato</p>
+                        <p className="mt-1 text-sm font-extrabold">{selectedFloorPlanArea?.name}</p>
+                        <p className="mt-1 break-words text-xs font-bold text-muted">{activeFloorPlan.name}</p>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-[6px] bg-slate-50 p-3">
@@ -383,8 +411,12 @@ export function ImpostazioniWorkspace() {
                         </div>
                         <div className="rounded-[6px] bg-slate-50 p-3">
                           <p className="text-xs font-bold text-muted">Tradotti</p>
-                          <p className="text-sm font-extrabold">{tables.length} tavoli</p>
+                          <p className="text-sm font-extrabold">{activeAreaTables.length} tavoli</p>
                         </div>
+                      </div>
+                      <div className="rounded-[6px] bg-slate-50 p-3">
+                        <p className="text-xs font-bold text-muted">Planimetrie caricate</p>
+                        <p className="text-sm font-extrabold">{floorPlans.length} sale</p>
                       </div>
                       <Button type="button" variant="outline" className="w-full" onClick={removeFloorPlan}>
                         <Trash2 className="size-5" />
@@ -394,7 +426,7 @@ export function ImpostazioniWorkspace() {
                   </div>
                 ) : (
                   <div className="rounded-[8px] border border-dashed border-line bg-white px-4 py-8 text-center text-sm font-semibold text-muted">
-                    Nessuna planimetria caricata. Dopo l'import, la stessa base verrà usata nella Sala live.
+                    Nessuna planimetria caricata per {selectedFloorPlanArea?.name ?? "questa sala"}. Dopo l'import, la stessa base verrà usata nella Sala live.
                   </div>
                 )}
               </div>
@@ -511,8 +543,17 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(Math.round(value), min), max);
 }
 
-function persistRoomLayout(areas: DiningAreaConfig[], tables: TableConfig[], floorPlan: StoredFloorPlan | null) {
-  return writeStoredRoomLayout({ areas, tables, floorPlan });
+function persistRoomLayout(areas: DiningAreaConfig[], tables: TableConfig[], floorPlans: StoredFloorPlan[]) {
+  return writeStoredRoomLayout({ areas, tables, floorPlans });
+}
+
+function replaceFloorPlan(floorPlans: StoredFloorPlan[], nextFloorPlan: StoredFloorPlan) {
+  return [...floorPlans.filter((plan) => plan.areaId !== nextFloorPlan.areaId), nextFloorPlan];
+}
+
+function mergeAreaTables(allTables: TableConfig[], areaId: string, areaTables: TableConfig[]) {
+  const updatedTables = new Map(areaTables.map((table) => [table.id, table]));
+  return allTables.map((table) => (table.areaId === areaId ? updatedTables.get(table.id) ?? table : table));
 }
 
 function translatePlanToLiveRoom(tables: TableConfig[], width: number, height: number) {

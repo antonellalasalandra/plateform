@@ -5,6 +5,8 @@ import { CalendarPlus, Search, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
+import { roomTables } from "@/lib/demo-data";
+import { readStoredRoomLayout, ROOM_LAYOUT_EVENT, type StoredRoomLayout } from "@/lib/room-layout-storage";
 import type { ReservationRow, ReservationStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -30,17 +32,47 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
   const [reservations, setReservations] = useState(initialReservations);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
+  const [areaFilter, setAreaFilter] = useState("all");
+  const [layout, setLayout] = useState<StoredRoomLayout | null>(null);
+  const [reservationAreaId, setReservationAreaId] = useState("area-main");
   const [modal, setModal] = useState<"reservation" | "walkin" | null>(null);
   const [selectedReservation, setSelectedReservation] = useState<ReservationRow | null>(null);
 
   useEffect(() => {
+    const storedLayout = readStoredRoomLayout();
+    setLayout(storedLayout);
+    setReservationAreaId(storedLayout?.areas[0]?.id ?? "area-main");
+
+    function syncLayout() {
+      const nextLayout = readStoredRoomLayout();
+      setLayout(nextLayout);
+      setReservationAreaId((current) => {
+        if (!nextLayout?.areas.length) return "area-main";
+        return nextLayout.areas.some((area) => area.id === current) ? current : nextLayout.areas[0].id;
+      });
+    }
+
+    window.addEventListener("storage", syncLayout);
+    window.addEventListener(ROOM_LAYOUT_EVENT, syncLayout);
+
     const requestedModal = new URLSearchParams(window.location.search).get("modal");
 
     if (requestedModal === "walkin" || requestedModal === "reservation") {
       setModal(requestedModal);
       window.history.replaceState(null, "", window.location.pathname);
     }
+
+    return () => {
+      window.removeEventListener("storage", syncLayout);
+      window.removeEventListener(ROOM_LAYOUT_EVENT, syncLayout);
+    };
   }, []);
+
+  const areas = layout?.areas.length ? layout.areas : [{ id: "area-main", name: "Sala principale" }];
+  const reservationTables = layout?.tables.length
+    ? layout.tables.map((table) => ({ id: table.id, areaId: table.areaId, name: table.name, seats: table.seatsMax }))
+    : roomTables.map((table) => ({ id: table.id, areaId: "area-main", name: table.name, seats: table.seats }));
+  const activeAreaTables = reservationTables.filter((table) => table.areaId === reservationAreaId);
 
   const filteredReservations = useMemo(() => {
     return reservations.filter((reservation) => {
@@ -48,14 +80,17 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
         reservation.customerName.toLowerCase().includes(query.toLowerCase()) ||
         reservation.customerPhone.toLowerCase().includes(query.toLowerCase());
       const matchesStatus = status === "all" || reservation.status === status;
-      return matchesQuery && matchesStatus;
+      const reservationArea = areaForReservation(reservation.tableNames, reservationTables, areas);
+      const matchesArea = areaFilter === "all" || reservationArea?.id === areaFilter;
+      return matchesQuery && matchesStatus && matchesArea;
     });
-  }, [query, reservations, status]);
+  }, [areaFilter, areas, query, reservationTables, reservations, status]);
 
   function addReservation(formData: FormData) {
     const isWalkin = modal === "walkin";
     const partySize = Number(formData.get("partySize") || 2);
     const startTime = String(formData.get("startTime") || "20:00");
+    const tableName = String(formData.get("table") || activeAreaTables[0]?.name || "T2");
     const newReservation: ReservationRow = {
       id: crypto.randomUUID(),
       customerName: isWalkin ? `Walk-in ${partySize} coperti` : String(formData.get("name") || "Nuova prenotazione"),
@@ -64,7 +99,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
       date: "2026-05-07",
       startTime,
       endTime: endTime(startTime, partySize),
-      tableNames: [String(formData.get("table") || "T2")],
+      tableNames: [tableName],
       status: isWalkin ? "seated" : "confirmed",
       source: isWalkin ? "walkin" : "phone",
       notes: String(formData.get("notes") || "")
@@ -84,18 +119,18 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
   return (
     <>
       <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-end">
-        <Button onClick={() => setModal("walkin")}>
+        <Button onClick={() => openModal("walkin", areas[0]?.id ?? "area-main")}>
           <UserPlus className="size-5" />
           Aggiungi walk-in
         </Button>
-        <Button onClick={() => setModal("reservation")}>
+        <Button onClick={() => openModal("reservation", areas[0]?.id ?? "area-main")}>
           <CalendarPlus className="size-5" />
           Nuova prenotazione
         </Button>
       </div>
 
       <Card className="p-5">
-        <div className="mb-6 grid gap-3 lg:grid-cols-[1fr_280px]">
+        <div className="mb-6 grid gap-3 lg:grid-cols-[1fr_220px_220px]">
           <label className="relative block">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted" />
             <Input
@@ -112,10 +147,18 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
             <option value="completed">Completate</option>
             <option value="cancelled">Cancellate</option>
           </Select>
+          <Select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)}>
+            <option value="all">Tutte le sale</option>
+            {areas.map((area) => (
+              <option key={area.id} value={area.id}>
+                {area.name}
+              </option>
+            ))}
+          </Select>
         </div>
 
         <div className="overflow-x-auto thin-scrollbar">
-          <table className="w-full min-w-[920px] border-collapse text-left">
+          <table className="w-full min-w-[1040px] border-collapse text-left">
             <thead>
               <tr className="border-b border-line text-sm font-extrabold text-muted">
                 <th className="px-4 py-3">Data & Ora</th>
@@ -123,6 +166,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                 <th className="px-4 py-3">Telefono</th>
                 <th className="px-4 py-3">Coperti</th>
                 <th className="px-4 py-3">Tavolo</th>
+                <th className="px-4 py-3">Sala</th>
                 <th className="px-4 py-3">Stato</th>
                 <th className="px-4 py-3 text-right">Azioni</th>
               </tr>
@@ -139,6 +183,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                     <td className="px-4 py-4 text-muted">{reservation.customerPhone}</td>
                     <td className="px-4 py-4">{reservation.partySize}</td>
                     <td className="px-4 py-4">{reservation.tableNames.join(", ")}</td>
+                    <td className="px-4 py-4 text-muted">{areaForReservation(reservation.tableNames, reservationTables, areas)?.name ?? "Sala principale"}</td>
                     <td className="px-4 py-4">
                       <span className={cn("rounded-[999px] border px-3 py-1 text-xs font-extrabold", statusClass[reservation.status])}>
                         {statusLabel[reservation.status]}
@@ -153,7 +198,7 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} className="h-40 text-center text-sm font-bold text-muted">
+                  <td colSpan={8} className="h-40 text-center text-sm font-bold text-muted">
                     Nessuna prenotazione trovata.
                   </td>
                 </tr>
@@ -204,13 +249,27 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                 <Input name="startTime" type="time" defaultValue="20:00" />
               </label>
               <label className="space-y-2">
+                <span className="text-sm font-bold">Sala</span>
+                <Select value={reservationAreaId} onChange={(event) => setReservationAreaId(event.target.value)}>
+                  {areas.map((area) => (
+                    <option key={area.id} value={area.id}>
+                      {area.name}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <label className="space-y-2">
                 <span className="text-sm font-bold">Tavolo</span>
-                <Select name="table" defaultValue="T2">
-                  <option>T1</option>
-                  <option>T2</option>
-                  <option>T3</option>
-                  <option>T4</option>
-                  <option>T7</option>
+                <Select key={reservationAreaId} name="table" defaultValue={activeAreaTables[0]?.name ?? ""}>
+                  {activeAreaTables.length ? (
+                    activeAreaTables.map((table) => (
+                      <option key={table.id} value={table.name}>
+                        {table.name} · {table.seats} cop.
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Nessun tavolo configurato</option>
+                  )}
                 </Select>
               </label>
               <label className="space-y-2 md:col-span-2">
@@ -259,6 +318,9 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
                 Tavolo: <span className="font-extrabold">{selectedReservation.tableNames.join(", ")}</span>
               </p>
               <p>
+                Sala: <span className="font-extrabold">{areaForReservation(selectedReservation.tableNames, reservationTables, areas)?.name ?? "Sala principale"}</span>
+              </p>
+              <p>
                 Origine: <span className="font-extrabold">{selectedReservation.source}</span>
               </p>
               <p>
@@ -280,6 +342,11 @@ export function ReservationWorkspace({ initialReservations }: { initialReservati
       ) : null}
     </>
   );
+
+  function openModal(nextModal: "reservation" | "walkin", areaId: string) {
+    setReservationAreaId(areaId);
+    setModal(nextModal);
+  }
 }
 
 function endTime(start: string, partySize: number) {
@@ -289,4 +356,14 @@ function endTime(start: string, partySize: number) {
   return `${Math.floor(total / 60)
     .toString()
     .padStart(2, "0")}:${(total % 60).toString().padStart(2, "0")}`;
+}
+
+function areaForReservation(
+  tableNames: string[],
+  tables: Array<{ areaId: string; name: string }>,
+  areas: Array<{ id: string; name: string }>
+) {
+  const table = tables.find((item) => tableNames.some((tableName) => tableName.toLowerCase() === item.name.toLowerCase()));
+  if (!table) return null;
+  return areas.find((area) => area.id === table.areaId) ?? { id: table.areaId, name: "Sala principale" };
 }

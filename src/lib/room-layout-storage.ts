@@ -14,6 +14,8 @@ export type StoredRoomTable = {
 };
 
 export type StoredFloorPlan = {
+  id: string;
+  areaId: string;
   name: string;
   dataUrl: string;
   width: number;
@@ -24,7 +26,7 @@ export type StoredFloorPlan = {
 export type StoredRoomLayout = {
   areas: StoredDiningArea[];
   tables: StoredRoomTable[];
-  floorPlan: StoredFloorPlan | null;
+  floorPlans: StoredFloorPlan[];
 };
 
 export const ROOM_LAYOUT_EVENT = "plateform:room-layout-updated";
@@ -36,14 +38,24 @@ export function readStoredRoomLayout() {
   try {
     const rawLayout = window.localStorage.getItem(ROOM_LAYOUT_STORAGE_KEY);
     if (!rawLayout) return null;
-    const parsed = JSON.parse(rawLayout) as Partial<StoredRoomLayout>;
+    const parsed = JSON.parse(rawLayout) as Partial<StoredRoomLayout> & { floorPlan?: unknown };
 
     if (!Array.isArray(parsed.areas) || !Array.isArray(parsed.tables)) return null;
+    const areas = parsed.areas.filter(isStoredDiningArea);
+    const tables = parsed.tables.filter(isStoredRoomTable);
+    const firstAreaId = areas[0]?.id ?? "area-main";
+    const legacyFloorPlan = normalizeFloorPlan(parsed.floorPlan, firstAreaId, 0);
 
     return {
-      areas: parsed.areas.filter(isStoredDiningArea),
-      tables: parsed.tables.filter(isStoredRoomTable),
-      floorPlan: isStoredFloorPlan(parsed.floorPlan) ? parsed.floorPlan : null
+      areas,
+      tables,
+      floorPlans: Array.isArray(parsed.floorPlans)
+        ? parsed.floorPlans
+            .map((floorPlan, index) => normalizeFloorPlan(floorPlan, firstAreaId, index))
+            .filter((floorPlan): floorPlan is StoredFloorPlan => Boolean(floorPlan))
+        : legacyFloorPlan
+          ? [legacyFloorPlan]
+          : []
     } satisfies StoredRoomLayout;
   } catch {
     return null;
@@ -95,4 +107,18 @@ function isStoredFloorPlan(value: unknown): value is StoredFloorPlan {
       typeof (value as StoredFloorPlan).height === "number" &&
       typeof (value as StoredFloorPlan).analyzedAt === "string"
   );
+}
+
+function normalizeFloorPlan(value: unknown, fallbackAreaId: string, index: number) {
+  if (!isStoredFloorPlan(value)) return null;
+
+  return {
+    id: typeof (value as Partial<StoredFloorPlan>).id === "string" ? (value as StoredFloorPlan).id : `floor-plan-${index + 1}`,
+    areaId: typeof (value as Partial<StoredFloorPlan>).areaId === "string" ? (value as StoredFloorPlan).areaId : fallbackAreaId,
+    name: value.name,
+    dataUrl: value.dataUrl,
+    width: value.width,
+    height: value.height,
+    analyzedAt: value.analyzedAt
+  } satisfies StoredFloorPlan;
 }
