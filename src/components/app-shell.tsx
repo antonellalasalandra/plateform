@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { LogOut, PanelLeft } from "lucide-react";
+import { AIAssistant } from "@/components/ai-assistant";
 import { MobileMenu } from "@/components/mobile-menu";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { appUser } from "@/lib/demo-data";
@@ -40,6 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className="min-h-screen pt-[76px] lg:pl-[280px]">
         <div className="mx-auto w-full max-w-[1680px] px-5 py-10 lg:px-8">{children}</div>
       </main>
+      <AIAssistant />
     </div>
   );
 }

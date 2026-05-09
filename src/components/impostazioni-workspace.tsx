@@ -3,11 +3,13 @@
 import { CheckCircle2, Clock, FileImage, Plus, RefreshCw, Save, ScanSearch, Sparkles, Table2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Notice } from "@/components/notice";
+import { OpenAIConnectionCard } from "@/components/openai-connection-card";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { restaurant, roomTables } from "@/lib/demo-data";
+import { readOpenAIConnection } from "@/lib/openai-connection-storage";
 import {
   readStoredRoomLayout,
   type StoredDiningArea,
@@ -195,14 +197,21 @@ export function ImpostazioniWorkspace() {
         analyzedAt: new Date().toISOString(),
         sourceType: "single-room"
       };
-      const detectedTables = await detectTablesForFloorPlan(nextFloorPlan);
+      const localDetectedTables = await detectTablesForFloorPlan(nextFloorPlan);
+      const aiDetectedTables = await detectTablesWithOpenAI(nextFloorPlan);
+      const detectedTables = chooseBetterTableDetection(localDetectedTables, aiDetectedTables);
       const translatedTables =
         detectedTables.length >= Math.max(activeAreaTables.length, 3)
           ? buildTablesFromPlanDetection(activeAreaTables, selectedFloorPlanAreaId, detectedTables)
           : translatePlanToLiveRoom(activeAreaTables, analyzedImage.width, analyzedImage.height);
       const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
       const nextFloorPlans = replaceFloorPlan(floorPlans, nextFloorPlan);
-      const analysisMode = detectedTables.length >= Math.max(activeAreaTables.length, 3) ? "riconosciuti dalla planimetria" : "tradotti dall'assetto configurato";
+      const analysisMode =
+        aiDetectedTables.length && detectedTables === aiDetectedTables
+          ? "riconosciuti con ChatGPT"
+          : detectedTables.length >= Math.max(activeAreaTables.length, 3)
+            ? "riconosciuti dalla planimetria"
+            : "tradotti dall'assetto configurato";
 
       setFloorPlans(nextFloorPlans);
       setTables(nextTables);
@@ -230,7 +239,7 @@ export function ImpostazioniWorkspace() {
 
     try {
       const analyzedImage = await readAndNormalizeImage(file);
-      const detectedRooms = await detectRoomsFromPlan(analyzedImage.dataUrl, analyzedImage.width, analyzedImage.height);
+      const localDetectedRooms = await detectRoomsFromPlan(analyzedImage.dataUrl, analyzedImage.width, analyzedImage.height);
       const nextFloorPlan: StoredFloorPlan = {
         id: crypto.randomUUID(),
         areaId: "complete-plan",
@@ -241,10 +250,12 @@ export function ImpostazioniWorkspace() {
         analyzedAt: new Date().toISOString(),
         sourceType: "complete-plan"
       };
+      const aiAnalysis = await analyzeCompletePlanWithOpenAI(nextFloorPlan);
+      const detectedRooms = aiAnalysis.rooms.length >= localDetectedRooms.length ? aiAnalysis.rooms : localDetectedRooms;
 
       setFullPlanAnalysis({ floorPlan: nextFloorPlan, rooms: detectedRooms });
       setNotice(
-        `Analisi pronta: ho trovato ${detectedRooms.length} ambienti candidati. Rinomina le sale e conferma quali usare nelle prenotazioni.`
+        `Analisi pronta: ho trovato ${detectedRooms.length} ambienti candidati${aiAnalysis.rooms.length ? " con ChatGPT" : ""}. Rinomina le sale e conferma quali usare nelle prenotazioni.`
       );
     } catch {
       setNotice("Non sono riuscito ad analizzare questa planimetria completa. Prova con un'immagine più nitida o meno compressa.");
@@ -298,7 +309,9 @@ export function ImpostazioniWorkspace() {
     let detectedTables: DetectedPlanTable[] = [];
 
     try {
-      detectedTables = await detectTablesFromPlan(fullPlanAnalysis.floorPlan.dataUrl, fullPlanAnalysis.floorPlan.width, fullPlanAnalysis.floorPlan.height);
+      const localTables = await detectTablesFromPlan(fullPlanAnalysis.floorPlan.dataUrl, fullPlanAnalysis.floorPlan.width, fullPlanAnalysis.floorPlan.height);
+      const aiTables = await detectTablesWithOpenAI(fullPlanAnalysis.floorPlan);
+      detectedTables = chooseBetterTableDetection(localTables, aiTables);
     } catch {
       detectedTables = [];
     }
@@ -352,13 +365,20 @@ export function ImpostazioniWorkspace() {
     setIsAnalyzingPlan(true);
 
     try {
-      const detectedTables = await detectTablesForFloorPlan(floorPlan);
+      const localDetectedTables = await detectTablesForFloorPlan(floorPlan);
+      const aiDetectedTables = await detectTablesWithOpenAI(floorPlan);
+      const detectedTables = chooseBetterTableDetection(localDetectedTables, aiDetectedTables);
       const translatedTables =
         detectedTables.length >= Math.max(activeAreaTables.length, 3)
           ? buildTablesFromPlanDetection(activeAreaTables, selectedFloorPlanAreaId, detectedTables)
           : translatePlanToLiveRoom(activeAreaTables, floorPlan.width, floorPlan.height);
       const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
-      const analysisMode = detectedTables.length >= Math.max(activeAreaTables.length, 3) ? "rilevati dall'immagine" : "riallineati dall'assetto esistente";
+      const analysisMode =
+        aiDetectedTables.length && detectedTables === aiDetectedTables
+          ? "rilevati con ChatGPT"
+          : detectedTables.length >= Math.max(activeAreaTables.length, 3)
+            ? "rilevati dall'immagine"
+            : "riallineati dall'assetto esistente";
 
       setTables(nextTables);
       if (!persistRoomLayout(areas, nextTables, floorPlans)) {
@@ -468,6 +488,8 @@ export function ImpostazioniWorkspace() {
             </form>
           </CardContent>
         </Card>
+
+        <OpenAIConnectionCard />
 
         <section className="grid gap-6">
           <Card>
@@ -851,6 +873,126 @@ function persistRoomLayout(areas: DiningAreaConfig[], tables: TableConfig[], flo
 
 function replaceFloorPlan(floorPlans: StoredFloorPlan[], nextFloorPlan: StoredFloorPlan) {
   return [...floorPlans.filter((plan) => plan.areaId !== nextFloorPlan.areaId), nextFloorPlan];
+}
+
+async function detectTablesWithOpenAI(floorPlan: StoredFloorPlan) {
+  const connection = readOpenAIConnection();
+  if (!connection) return [];
+
+  try {
+    const response = await fetch("/api/ai/floor-plan", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-openai-api-key": connection.apiKey
+      },
+      body: JSON.stringify({
+        imageDataUrl: floorPlan.dataUrl,
+        mode: "single-room",
+        model: connection.model
+      })
+    });
+    if (!response.ok) return [];
+    const data = (await response.json()) as { tables?: DetectedPlanTable[] };
+    return sanitizeDetectedTables(data.tables);
+  } catch {
+    return [];
+  }
+}
+
+async function analyzeCompletePlanWithOpenAI(floorPlan: StoredFloorPlan) {
+  const connection = readOpenAIConnection();
+  if (!connection) return { rooms: [] as DetectedFloorRoom[], tables: [] as DetectedPlanTable[] };
+
+  try {
+    const response = await fetch("/api/ai/floor-plan", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-openai-api-key": connection.apiKey
+      },
+      body: JSON.stringify({
+        imageDataUrl: floorPlan.dataUrl,
+        mode: "complete-plan",
+        model: connection.model
+      })
+    });
+    if (!response.ok) return { rooms: [], tables: [] };
+    const data = (await response.json()) as { rooms?: Array<Partial<DetectedFloorRoom>>; tables?: DetectedPlanTable[] };
+
+    return {
+      rooms: sanitizeDetectedRooms(data.rooms),
+      tables: sanitizeDetectedTables(data.tables)
+    };
+  } catch {
+    return { rooms: [], tables: [] };
+  }
+}
+
+function chooseBetterTableDetection(localTables: DetectedPlanTable[], aiTables: DetectedPlanTable[]) {
+  if (!aiTables.length) return localTables;
+  if (!localTables.length) return aiTables;
+  const expectedImprovement = aiTables.length >= localTables.length + 2;
+  const higherConfidence = averageTableConfidence(aiTables) >= averageTableConfidence(localTables) + 0.08;
+  return expectedImprovement || higherConfidence ? aiTables : localTables;
+}
+
+function averageTableConfidence(tables: DetectedPlanTable[]) {
+  if (!tables.length) return 0;
+  return tables.reduce((sum, table) => sum + table.confidence, 0) / tables.length;
+}
+
+function sanitizeDetectedTables(tables: unknown) {
+  if (!Array.isArray(tables)) return [];
+
+  return tables
+    .filter((table): table is DetectedPlanTable => {
+      const candidate = table as Partial<DetectedPlanTable>;
+      return ["x", "y", "width", "height", "confidence"].every((key) => typeof candidate[key as keyof DetectedPlanTable] === "number");
+    })
+    .map((table) => ({
+      x: clampDecimal(table.x, 0, 100),
+      y: clampDecimal(table.y, 0, 100),
+      width: clampDecimal(table.width, 0.8, 30),
+      height: clampDecimal(table.height, 0.8, 30),
+      confidence: clampDecimal(table.confidence, 0.1, 0.99)
+    }))
+    .filter((table) => table.x >= 0 && table.x <= 100 && table.y >= 0 && table.y <= 100)
+    .slice(0, 40);
+}
+
+function sanitizeDetectedRooms(rooms: unknown) {
+  if (!Array.isArray(rooms)) return [];
+
+  let diningIndex = 0;
+  return rooms
+    .filter((room) => {
+      const candidate = room as Partial<DetectedFloorRoom>;
+      return ["x", "y", "width", "height", "confidence"].every((key) => typeof candidate[key as keyof DetectedFloorRoom] === "number");
+    })
+    .map((room, index) => {
+      const candidate = room as Partial<DetectedFloorRoom>;
+      const kind = isDetectedRoomKind(candidate.kind) ? candidate.kind : "other";
+      if (kind === "dining") diningIndex += 1;
+
+      return {
+        id: crypto.randomUUID(),
+        name: typeof candidate.name === "string" && candidate.name.trim() ? candidate.name.trim() : kind === "dining" ? `Sala ${diningIndex}` : `Ambiente ${index + 1}`,
+        kind,
+        x: clampDecimal(candidate.x ?? 0, 0, 98),
+        y: clampDecimal(candidate.y ?? 0, 0, 98),
+        width: clampDecimal(candidate.width ?? 2, 2, 100),
+        height: clampDecimal(candidate.height ?? 2, 2, 100),
+        confidence: clampDecimal(candidate.confidence ?? 0.5, 0.1, 0.99),
+        enabled: kind === "dining"
+      } satisfies DetectedFloorRoom;
+    })
+    .filter((room) => room.width * room.height >= 2)
+    .slice(0, 12);
+}
+
+function isDetectedRoomKind(kind: unknown): kind is DetectedRoomKind {
+  return kind === "dining" || kind === "kitchen" || kind === "service" || kind === "other";
 }
 
 function mergeAreaTables(allTables: TableConfig[], areaId: string, areaTables: TableConfig[]) {
