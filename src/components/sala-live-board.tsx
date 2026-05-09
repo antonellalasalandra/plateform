@@ -4,7 +4,7 @@ import { Armchair, CircleAlert, Clock, Phone, User } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { roomTables, reservations } from "@/lib/demo-data";
-import { readStoredRoomLayout, ROOM_LAYOUT_EVENT, type StoredRoomLayout } from "@/lib/room-layout-storage";
+import { readStoredRoomLayout, ROOM_LAYOUT_EVENT, type StoredFloorPlan, type StoredRoomLayout } from "@/lib/room-layout-storage";
 import { cn } from "@/lib/utils";
 
 type LiveRoomTable = {
@@ -97,12 +97,7 @@ export function SalaLiveBoard() {
       ) : null}
 
       <div className="relative isolate overflow-visible rounded-[8px] border border-line bg-slate-50">
-        {activeFloorPlan ? (
-          <div
-            className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-cover bg-center opacity-55"
-            style={{ backgroundImage: `url(${activeFloorPlan.dataUrl})` }}
-          />
-        ) : null}
+        {activeFloorPlan ? <FloorPlanBackground floorPlan={activeFloorPlan} /> : null}
         <div className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-[linear-gradient(#e1e8f1_1px,transparent_1px),linear-gradient(90deg,#e1e8f1_1px,transparent_1px)] bg-[size:90px_90px] opacity-80" />
         <div className="relative h-[560px] min-w-[900px]">
           {liveTables.map((table) => {
@@ -167,6 +162,51 @@ export function SalaLiveBoard() {
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function FloorPlanBackground({ floorPlan }: { floorPlan: StoredFloorPlan }) {
+  const sourceX = floorPlan.sourceX;
+  const sourceY = floorPlan.sourceY;
+  const sourceWidth = floorPlan.sourceWidth;
+  const sourceHeight = floorPlan.sourceHeight;
+  const hasRoomCrop =
+    floorPlan.sourceType === "complete-plan" &&
+    typeof sourceX === "number" &&
+    typeof sourceY === "number" &&
+    typeof sourceWidth === "number" &&
+    typeof sourceHeight === "number" &&
+    sourceWidth > 0 &&
+    sourceHeight > 0;
+
+  if (!hasRoomCrop) {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 z-0 rounded-[8px] bg-cover bg-center opacity-55"
+        style={{ backgroundImage: `url(${floorPlan.dataUrl})` }}
+      />
+    );
+  }
+
+  const scaledWidth = 10000 / sourceWidth;
+  const scaledHeight = 10000 / sourceHeight;
+  const left = -(sourceX * 100) / sourceWidth;
+  const top = -(sourceY * 100) / sourceHeight;
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden rounded-[8px]">
+      <div
+        className="absolute bg-center opacity-55"
+        style={{
+          backgroundImage: `url(${floorPlan.dataUrl})`,
+          backgroundSize: "100% 100%",
+          height: `${scaledHeight}%`,
+          left: `${left}%`,
+          top: `${top}%`,
+          width: `${scaledWidth}%`
+        }}
+      />
     </div>
   );
 }

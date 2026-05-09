@@ -21,6 +21,11 @@ export type StoredFloorPlan = {
   width: number;
   height: number;
   analyzedAt: string;
+  sourceType?: "single-room" | "complete-plan";
+  sourceX?: number;
+  sourceY?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
 };
 
 export type StoredRoomLayout = {
@@ -109,10 +114,10 @@ function isStoredFloorPlan(value: unknown): value is StoredFloorPlan {
   );
 }
 
-function normalizeFloorPlan(value: unknown, fallbackAreaId: string, index: number) {
+function normalizeFloorPlan(value: unknown, fallbackAreaId: string, index: number): StoredFloorPlan | null {
   if (!isStoredFloorPlan(value)) return null;
 
-  return {
+  const normalized: StoredFloorPlan = {
     id: typeof (value as Partial<StoredFloorPlan>).id === "string" ? (value as StoredFloorPlan).id : `floor-plan-${index + 1}`,
     areaId: typeof (value as Partial<StoredFloorPlan>).areaId === "string" ? (value as StoredFloorPlan).areaId : fallbackAreaId,
     name: value.name,
@@ -120,5 +125,25 @@ function normalizeFloorPlan(value: unknown, fallbackAreaId: string, index: numbe
     width: value.width,
     height: value.height,
     analyzedAt: value.analyzedAt
-  } satisfies StoredFloorPlan;
+  };
+
+  if ((value as Partial<StoredFloorPlan>).sourceType === "complete-plan" || (value as Partial<StoredFloorPlan>).sourceType === "single-room") {
+    normalized.sourceType = (value as StoredFloorPlan).sourceType;
+  }
+
+  const sourceX = optionalNumber((value as Partial<StoredFloorPlan>).sourceX);
+  const sourceY = optionalNumber((value as Partial<StoredFloorPlan>).sourceY);
+  const sourceWidth = optionalNumber((value as Partial<StoredFloorPlan>).sourceWidth);
+  const sourceHeight = optionalNumber((value as Partial<StoredFloorPlan>).sourceHeight);
+
+  if (sourceX !== undefined) normalized.sourceX = sourceX;
+  if (sourceY !== undefined) normalized.sourceY = sourceY;
+  if (sourceWidth !== undefined) normalized.sourceWidth = sourceWidth;
+  if (sourceHeight !== undefined) normalized.sourceHeight = sourceHeight;
+
+  return normalized;
+}
+
+function optionalNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

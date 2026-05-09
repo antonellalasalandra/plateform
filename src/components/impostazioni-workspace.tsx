@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock, FileImage, Plus, Save, Sparkles, Table2, Trash2 } from "lucide-react";
+import { CheckCircle2, Clock, FileImage, Plus, Save, ScanSearch, Sparkles, Table2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Notice } from "@/components/notice";
 import { PageHeader } from "@/components/page-header";
@@ -18,6 +18,31 @@ import {
 
 type DiningAreaConfig = StoredDiningArea;
 type TableConfig = StoredRoomTable;
+type DetectedRoomKind = "dining" | "kitchen" | "service" | "other";
+
+type DetectedFloorRoom = {
+  id: string;
+  name: string;
+  kind: DetectedRoomKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
+  enabled: boolean;
+};
+
+type FullPlanAnalysis = {
+  floorPlan: StoredFloorPlan;
+  rooms: DetectedFloorRoom[];
+};
+
+const roomKindLabels: Record<DetectedRoomKind, string> = {
+  dining: "Sala",
+  kitchen: "Cucina",
+  service: "Servizi",
+  other: "Altro"
+};
 
 const initialAreas: DiningAreaConfig[] = [{ id: "area-main", name: "Sala principale" }];
 
@@ -38,11 +63,13 @@ export function ImpostazioniWorkspace() {
   const [floorPlans, setFloorPlans] = useState<StoredFloorPlan[]>([]);
   const [selectedFloorPlanAreaId, setSelectedFloorPlanAreaId] = useState(initialAreas[0].id);
   const [isAnalyzingPlan, setIsAnalyzingPlan] = useState(false);
+  const [fullPlanAnalysis, setFullPlanAnalysis] = useState<FullPlanAnalysis | null>(null);
 
   const totalSeats = tables.reduce((sum, table) => sum + table.seatsMax, 0);
   const selectedFloorPlanArea = areas.find((area) => area.id === selectedFloorPlanAreaId) ?? areas[0];
   const activeFloorPlan = floorPlans.find((plan) => plan.areaId === selectedFloorPlanAreaId) ?? null;
   const activeAreaTables = tables.filter((table) => table.areaId === selectedFloorPlanAreaId);
+  const operationalRoomCount = fullPlanAnalysis?.rooms.filter((room) => room.enabled && room.kind === "dining").length ?? 0;
   const floorPlanAspect = useMemo(() => {
     if (!activeFloorPlan) return "";
     return `${activeFloorPlan.width} x ${activeFloorPlan.height}px`;
@@ -157,7 +184,8 @@ export function ImpostazioniWorkspace() {
         dataUrl: analyzedImage.dataUrl,
         width: analyzedImage.width,
         height: analyzedImage.height,
-        analyzedAt: new Date().toISOString()
+        analyzedAt: new Date().toISOString(),
+        sourceType: "single-room"
       };
       const translatedTables = translatePlanToLiveRoom(activeAreaTables, analyzedImage.width, analyzedImage.height);
       const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
@@ -175,6 +203,115 @@ export function ImpostazioniWorkspace() {
     } finally {
       setIsAnalyzingPlan(false);
     }
+  }
+
+  async function importCompleteFloorPlan(file: File | undefined) {
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setNotice("Carica una planimetria completa in formato immagine: PNG, JPG o WebP.");
+      return;
+    }
+
+    setIsAnalyzingPlan(true);
+
+    try {
+      const analyzedImage = await readAndNormalizeImage(file);
+      const detectedRooms = await detectRoomsFromPlan(analyzedImage.dataUrl, analyzedImage.width, analyzedImage.height);
+      const nextFloorPlan: StoredFloorPlan = {
+        id: crypto.randomUUID(),
+        areaId: "complete-plan",
+        name: file.name,
+        dataUrl: analyzedImage.dataUrl,
+        width: analyzedImage.width,
+        height: analyzedImage.height,
+        analyzedAt: new Date().toISOString(),
+        sourceType: "complete-plan"
+      };
+
+      setFullPlanAnalysis({ floorPlan: nextFloorPlan, rooms: detectedRooms });
+      setNotice(
+        `Analisi pronta: ho trovato ${detectedRooms.length} ambienti candidati. Rinomina le sale e conferma quali usare nelle prenotazioni.`
+      );
+    } catch {
+      setNotice("Non sono riuscito ad analizzare questa planimetria completa. Prova con un'immagine più nitida o meno compressa.");
+    } finally {
+      setIsAnalyzingPlan(false);
+    }
+  }
+
+  function updateDetectedRoom(roomId: string, patch: Partial<DetectedFloorRoom>) {
+    setFullPlanAnalysis((current) => {
+      if (!current) return current;
+
+      return {
+        ...current,
+        rooms: current.rooms.map((room) => {
+          if (room.id !== roomId) return room;
+          const nextKind = patch.kind ?? room.kind;
+
+          return {
+            ...room,
+            ...patch,
+            enabled: nextKind === "dining" ? patch.enabled ?? room.enabled : false,
+            kind: nextKind
+          };
+        })
+      };
+    });
+  }
+
+  function applyCompleteFloorPlanAnalysis() {
+    if (!fullPlanAnalysis) {
+      setNotice("Carica prima una planimetria completa da analizzare.");
+      return;
+    }
+
+    const acceptedRooms = fullPlanAnalysis.rooms.filter((room) => room.enabled && room.kind === "dining");
+    if (!acceptedRooms.length) {
+      setNotice("Segna almeno un ambiente come Sala per creare le sale operative.");
+      return;
+    }
+
+    const nextAreas = acceptedRooms.map((room, index) => {
+      const existingArea = areas.find((area) => area.name.trim().toLowerCase() === room.name.trim().toLowerCase());
+      return {
+        id: existingArea?.id ?? crypto.randomUUID(),
+        name: room.name.trim() || `Sala ${index + 1}`
+      };
+    });
+    const nextTables = buildTablesForDetectedRooms(tables.length ? tables : initialTables, acceptedRooms, nextAreas);
+    const nextFloorPlans = acceptedRooms.map((room, index) => {
+      const area = nextAreas[index];
+
+      return {
+        id: floorPlans.find((plan) => plan.areaId === area.id)?.id ?? crypto.randomUUID(),
+        areaId: area.id,
+        name: `${fullPlanAnalysis.floorPlan.name} · ${area.name}`,
+        dataUrl: fullPlanAnalysis.floorPlan.dataUrl,
+        width: fullPlanAnalysis.floorPlan.width,
+        height: fullPlanAnalysis.floorPlan.height,
+        analyzedAt: new Date().toISOString(),
+        sourceType: "complete-plan",
+        sourceX: room.x,
+        sourceY: room.y,
+        sourceWidth: room.width,
+        sourceHeight: room.height
+      } satisfies StoredFloorPlan;
+    });
+
+    setAreas(nextAreas);
+    setTables(nextTables);
+    setFloorPlans(nextFloorPlans);
+    setSelectedFloorPlanAreaId(nextAreas[0]?.id ?? "area-main");
+    setFullPlanAnalysis(null);
+
+    if (!persistRoomLayout(nextAreas, nextTables, nextFloorPlans)) {
+      setNotice("Sale create in pagina, ma il browser non ha spazio per salvare la planimetria completa.");
+      return;
+    }
+
+    setNotice(`Planimetria completa applicata: ${nextAreas.length} sale operative e ${nextTables.length} tavoli distribuiti.`);
   }
 
   function analyzeCurrentFloorPlan() {
@@ -337,14 +474,123 @@ export function ImpostazioniWorkspace() {
             </CardHeader>
             <CardContent>
               <div className="mb-5 grid gap-4 rounded-[8px] border border-line bg-slate-50 p-4">
+                <div className="grid gap-4 rounded-[8px] border border-line bg-white p-4">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                    <div>
+                      <h3 className="flex items-center gap-2 text-base font-extrabold">
+                        <ScanSearch className="size-5" />
+                        Analizza planimetria completa
+                      </h3>
+                      <p className="mt-1 text-sm font-semibold text-muted">
+                        Usa questo flusso per piante con più sale, cucina, corridoi e servizi: Plateform separa gli ambienti e ti chiede quali sono sale operative.
+                      </p>
+                    </div>
+                    <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
+                      <FileImage className="size-5" />
+                      Planimetria completa
+                      <input
+                        className="sr-only"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(event) => {
+                          void importCompleteFloorPlan(event.currentTarget.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {fullPlanAnalysis ? (
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                      <div
+                        className="relative w-full overflow-hidden rounded-[8px] border border-line bg-white"
+                        style={{ aspectRatio: `${fullPlanAnalysis.floorPlan.width} / ${fullPlanAnalysis.floorPlan.height}` }}
+                      >
+                        <img
+                          src={fullPlanAnalysis.floorPlan.dataUrl}
+                          alt="Planimetria completa analizzata"
+                          className="absolute inset-0 h-full w-full object-fill opacity-75"
+                        />
+                        {fullPlanAnalysis.rooms.map((room) => (
+                          <button
+                            key={room.id}
+                            type="button"
+                            className={`absolute rounded-[6px] border-2 text-left shadow-sm transition hover:shadow-lg ${
+                              room.kind === "dining"
+                                ? "border-emerald-400 bg-emerald-100/70 text-emerald-900"
+                                : "border-slate-300 bg-white/70 text-slate-700"
+                            } ${room.enabled ? "ring-2 ring-emerald-500/30" : "opacity-75"}`}
+                            style={{ left: `${room.x}%`, top: `${room.y}%`, width: `${room.width}%`, height: `${room.height}%` }}
+                            onClick={() => updateDetectedRoom(room.id, { enabled: room.kind === "dining" ? !room.enabled : false })}
+                          >
+                            <span className="block truncate px-2 py-1 text-xs font-extrabold">{room.name}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="rounded-[6px] border border-line bg-slate-50 p-3">
+                          <p className="text-xs font-extrabold uppercase text-muted">Ambienti trovati</p>
+                          <p className="mt-1 text-sm font-semibold text-muted">
+                            Dai un nome alle sale, imposta il tipo e lascia attive solo quelle che devono comparire in Sala live e nelle prenotazioni.
+                          </p>
+                        </div>
+                        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1 thin-scrollbar">
+                          {fullPlanAnalysis.rooms.map((room, index) => (
+                            <div key={room.id} className="grid gap-2 rounded-[6px] border border-line bg-white p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-extrabold uppercase text-muted">Ambiente {index + 1}</span>
+                                <label className="flex items-center gap-2 text-xs font-extrabold text-muted">
+                                  <input
+                                    type="checkbox"
+                                    className="size-4 accent-slate-900"
+                                    checked={room.enabled}
+                                    disabled={room.kind !== "dining"}
+                                    onChange={(event) => updateDetectedRoom(room.id, { enabled: event.currentTarget.checked })}
+                                  />
+                                  Usa come sala
+                                </label>
+                              </div>
+                              <Input value={room.name} aria-label="Nome ambiente" onChange={(event) => updateDetectedRoom(room.id, { name: event.target.value })} />
+                              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                                <Select
+                                  value={room.kind}
+                                  aria-label="Tipo ambiente"
+                                  onChange={(event) => {
+                                    const kind = event.target.value as DetectedRoomKind;
+                                    updateDetectedRoom(room.id, { kind, enabled: kind === "dining" });
+                                  }}
+                                >
+                                  {Object.entries(roomKindLabels).map(([kind, label]) => (
+                                    <option key={kind} value={kind}>
+                                      {label}
+                                    </option>
+                                  ))}
+                                </Select>
+                                <span className="rounded-[6px] bg-slate-50 px-3 py-2 text-xs font-extrabold text-muted">
+                                  {Math.round(room.confidence * 100)}%
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <Button type="button" className="w-full" onClick={applyCompleteFloorPlanAnalysis} disabled={!operationalRoomCount}>
+                          <CheckCircle2 className="size-5" />
+                          Crea {operationalRoomCount || ""} sale operative
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                   <div>
                     <h3 className="flex items-center gap-2 text-base font-extrabold">
                       <FileImage className="size-5" />
-                      Importa planimetria
+                      Planimetria per sala
                     </h3>
                     <p className="mt-1 text-sm font-semibold text-muted">
-                      Carica una planimetria per ogni sala: la Sala live userà la planimetria e i tavoli della sala selezionata.
+                      Usa questo percorso per caricare o correggere una planimetria già riferita a una sola sala.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -556,6 +802,89 @@ function mergeAreaTables(allTables: TableConfig[], areaId: string, areaTables: T
   return allTables.map((table) => (table.areaId === areaId ? updatedTables.get(table.id) ?? table : table));
 }
 
+function buildTablesForDetectedRooms(sourceTables: TableConfig[], rooms: DetectedFloorRoom[], areas: DiningAreaConfig[]) {
+  const sortedTables = sourceTables.slice().sort((a, b) => tableSortValue(a.name) - tableSortValue(b.name));
+  const totalTables = Math.max(sortedTables.length, rooms.length * 2);
+  const roomTableCounts = distributeTableCounts(rooms, totalTables);
+  const nextTables: TableConfig[] = [];
+  const usedIds = new Set<string>();
+  let sourceIndex = 0;
+  let tableNumber = 1;
+
+  rooms.forEach((room, roomIndex) => {
+    const area = areas[roomIndex];
+    const positions = tablePositionsForRoom(roomTableCounts[roomIndex] ?? 1, room.width / Math.max(room.height, 1));
+
+    positions.forEach((position) => {
+      const sourceTable = sortedTables[sourceIndex];
+      sourceIndex += 1;
+      const id = sourceTable && !usedIds.has(sourceTable.id) ? sourceTable.id : crypto.randomUUID();
+      usedIds.add(id);
+
+      nextTables.push({
+        id,
+        areaId: area.id,
+        name: sourceTable?.name ?? `T${tableNumber}`,
+        seatsMin: sourceTable?.seatsMin ?? 1,
+        seatsMax: sourceTable?.seatsMax ?? (tableNumber % 3 === 0 ? 4 : 2),
+        positionX: position.x,
+        positionY: position.y
+      });
+      tableNumber += 1;
+    });
+  });
+
+  return nextTables;
+}
+
+function distributeTableCounts(rooms: DetectedFloorRoom[], totalTables: number) {
+  if (!rooms.length) return [];
+
+  const baseCount = totalTables >= rooms.length * 2 ? 2 : 1;
+  const counts = rooms.map(() => baseCount);
+  let remainingTables = Math.max(0, totalTables - counts.reduce((sum, count) => sum + count, 0));
+  const weights = rooms.map((room) => Math.max(room.width * room.height, 1));
+
+  while (remainingTables > 0) {
+    let targetIndex = 0;
+    let targetScore = -Infinity;
+
+    weights.forEach((weight, index) => {
+      const score = weight / counts[index];
+      if (score > targetScore) {
+        targetScore = score;
+        targetIndex = index;
+      }
+    });
+
+    counts[targetIndex] += 1;
+    remainingTables -= 1;
+  }
+
+  return counts;
+}
+
+function tablePositionsForRoom(count: number, aspectRatio: number) {
+  const safeCount = Math.max(count, 1);
+  const columns = Math.min(safeCount, Math.max(2, Math.ceil(Math.sqrt(safeCount * Math.max(aspectRatio, 0.5)))));
+  const rows = Math.ceil(safeCount / columns);
+  const horizontalPadding = aspectRatio >= 1 ? 14 : 20;
+  const verticalPadding = aspectRatio >= 1 ? 18 : 14;
+  const usableWidth = 100 - horizontalPadding * 2;
+  const usableHeight = 100 - verticalPadding * 2;
+
+  return Array.from({ length: safeCount }, (_, index) => {
+    const col = index % columns;
+    const row = Math.floor(index / columns);
+    const stagger = rows > 1 && row % 2 === 1 ? usableWidth / columns / 2 : 0;
+
+    return {
+      x: clampNumber(horizontalPadding + ((col + 0.5) * usableWidth) / columns + stagger, 8, 92),
+      y: clampNumber(verticalPadding + ((row + 0.5) * usableHeight) / rows, 10, 90)
+    };
+  });
+}
+
 function translatePlanToLiveRoom(tables: TableConfig[], width: number, height: number) {
   const count = Math.max(tables.length, 1);
   const aspectRatio = width / Math.max(height, 1);
@@ -616,6 +945,395 @@ async function readAndNormalizeImage(file: File) {
     width: canvas.width,
     height: canvas.height
   };
+}
+
+type RoomCandidate = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  area: number;
+  touchesEdge: boolean;
+  source: "closed-space" | "projection" | "fallback";
+};
+
+type PixelBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
+
+async function detectRoomsFromPlan(dataUrl: string, width: number, height: number) {
+  const image = await loadImage(dataUrl);
+  const sampleScale = Math.min(1, 260 / Math.max(width, height));
+  const sampleWidth = Math.max(96, Math.round(width * sampleScale));
+  const sampleHeight = Math.max(96, Math.round(height * sampleScale));
+  const canvas = document.createElement("canvas");
+  canvas.width = sampleWidth;
+  canvas.height = sampleHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  if (!context) return fallbackDetectedRooms(width, height);
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, sampleWidth, sampleHeight);
+  context.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+
+  const imageData = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  const obstacleMask = new Uint8Array(sampleWidth * sampleHeight);
+  const contentBounds = findPlanContentBounds(imageData, sampleWidth, sampleHeight, obstacleMask);
+
+  if (!contentBounds) return fallbackDetectedRooms(width, height);
+
+  const blockedMask = dilateObstacleMask(obstacleMask, sampleWidth, sampleHeight, contentBounds);
+  const connectedRooms = findOpenRoomCandidates(blockedMask, sampleWidth, sampleHeight, contentBounds);
+  const projectedRooms = connectedRooms.length >= 2 ? [] : projectRoomsFromWallLines(obstacleMask, sampleWidth, sampleHeight, contentBounds);
+  const candidates = connectedRooms.length >= 2 ? connectedRooms : projectedRooms;
+  const normalizedCandidates = candidates.length ? candidates : fallbackRoomCandidates(contentBounds, sampleWidth, sampleHeight);
+
+  return classifyRoomCandidates(normalizedCandidates, width, height);
+}
+
+function findPlanContentBounds(imageData: Uint8ClampedArray, width: number, height: number, obstacleMask: Uint8Array) {
+  const bounds: PixelBounds = { minX: width, minY: height, maxX: 0, maxY: 0 };
+  let inkPixels = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = (y * width + x) * 4;
+      const alpha = imageData[pixelIndex + 3];
+      const red = imageData[pixelIndex];
+      const green = imageData[pixelIndex + 1];
+      const blue = imageData[pixelIndex + 2];
+      const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      const saturation = colorSaturation(red, green, blue);
+      const isPlanStroke = alpha > 32 && (luminance < 205 || (saturation > 0.32 && luminance < 232));
+
+      if (!isPlanStroke) continue;
+
+      obstacleMask[y * width + x] = 1;
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.maxY = Math.max(bounds.maxY, y);
+      inkPixels += 1;
+    }
+  }
+
+  if (!inkPixels) return null;
+
+  const margin = Math.max(3, Math.round(Math.min(width, height) * 0.025));
+  return {
+    minX: Math.max(0, bounds.minX - margin),
+    minY: Math.max(0, bounds.minY - margin),
+    maxX: Math.min(width - 1, bounds.maxX + margin),
+    maxY: Math.min(height - 1, bounds.maxY + margin)
+  } satisfies PixelBounds;
+}
+
+function dilateObstacleMask(obstacleMask: Uint8Array, width: number, height: number, bounds: PixelBounds) {
+  const blockedMask = new Uint8Array(width * height);
+  const radius = Math.max(1, Math.round(Math.min(width, height) / 150));
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const outsidePlan = x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY;
+
+      if (outsidePlan) {
+        blockedMask[index] = 1;
+        continue;
+      }
+
+      if (!obstacleMask[index]) continue;
+
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const nextX = x + dx;
+          const nextY = y + dy;
+          if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+          blockedMask[nextY * width + nextX] = 1;
+        }
+      }
+    }
+  }
+
+  for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+    blockedMask[bounds.minY * width + x] = 1;
+    blockedMask[bounds.maxY * width + x] = 1;
+  }
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    blockedMask[y * width + bounds.minX] = 1;
+    blockedMask[y * width + bounds.maxX] = 1;
+  }
+
+  return blockedMask;
+}
+
+function findOpenRoomCandidates(blockedMask: Uint8Array, width: number, height: number, bounds: PixelBounds) {
+  const visited = new Uint8Array(width * height);
+  const candidates: RoomCandidate[] = [];
+  const minArea = Math.max(24, Math.round(width * height * 0.004));
+  const maxArea = Math.round(width * height * 0.55);
+
+  for (let startY = bounds.minY + 1; startY < bounds.maxY; startY += 1) {
+    for (let startX = bounds.minX + 1; startX < bounds.maxX; startX += 1) {
+      const startIndex = startY * width + startX;
+      if (visited[startIndex] || blockedMask[startIndex]) continue;
+
+      const queue = [startIndex];
+      visited[startIndex] = 1;
+      let cursor = 0;
+      let area = 0;
+      let minX = startX;
+      let minY = startY;
+      let maxX = startX;
+      let maxY = startY;
+      let touchesEdge = false;
+
+      while (cursor < queue.length) {
+        const index = queue[cursor];
+        cursor += 1;
+        const x = index % width;
+        const y = Math.floor(index / width);
+        area += 1;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        touchesEdge = touchesEdge || x <= bounds.minX + 1 || x >= bounds.maxX - 1 || y <= bounds.minY + 1 || y >= bounds.maxY - 1;
+
+        const neighbors = [
+          [x - 1, y],
+          [x + 1, y],
+          [x, y - 1],
+          [x, y + 1]
+        ];
+        for (const [neighborX, neighborY] of neighbors) {
+          if (neighborX < bounds.minX || neighborX > bounds.maxX || neighborY < bounds.minY || neighborY > bounds.maxY) continue;
+          const neighbor = neighborY * width + neighborX;
+          if (visited[neighbor] || blockedMask[neighbor]) continue;
+          visited[neighbor] = 1;
+          queue.push(neighbor);
+        }
+      }
+
+      const roomWidth = maxX - minX + 1;
+      const roomHeight = maxY - minY + 1;
+      const bboxAreaRatio = (roomWidth * roomHeight) / Math.max(width * height, 1);
+      const isUsefulCandidate =
+        area >= minArea &&
+        area <= maxArea &&
+        roomWidth >= width * 0.08 &&
+        roomHeight >= height * 0.08 &&
+        (!touchesEdge || bboxAreaRatio < 0.4);
+
+      if (!isUsefulCandidate) continue;
+
+      candidates.push({
+        x: (minX / width) * 100,
+        y: (minY / height) * 100,
+        width: (roomWidth / width) * 100,
+        height: (roomHeight / height) * 100,
+        area,
+        touchesEdge,
+        source: "closed-space"
+      });
+    }
+  }
+
+  return candidates.sort((a, b) => b.area - a.area).slice(0, 10);
+}
+
+function projectRoomsFromWallLines(obstacleMask: Uint8Array, width: number, height: number, bounds: PixelBounds) {
+  const contentWidth = Math.max(bounds.maxX - bounds.minX + 1, 1);
+  const contentHeight = Math.max(bounds.maxY - bounds.minY + 1, 1);
+  const verticalCuts = findProjectionCuts(obstacleMask, width, bounds, "vertical");
+  const horizontalCuts = findProjectionCuts(obstacleMask, width, bounds, "horizontal");
+
+  if (!verticalCuts.length && !horizontalCuts.length) return [];
+
+  const xSegments = buildSegments(bounds.minX, bounds.maxX, verticalCuts, contentWidth * 0.16);
+  const ySegments = buildSegments(bounds.minY, bounds.maxY, horizontalCuts, contentHeight * 0.16);
+  const candidates: RoomCandidate[] = [];
+
+  for (let yIndex = 0; yIndex < ySegments.length; yIndex += 1) {
+    for (let xIndex = 0; xIndex < xSegments.length; xIndex += 1) {
+      const [minX, maxX] = xSegments[xIndex];
+      const [minY, maxY] = ySegments[yIndex];
+      const roomWidth = maxX - minX;
+      const roomHeight = maxY - minY;
+      const area = roomWidth * roomHeight;
+
+      if (roomWidth < contentWidth * 0.16 || roomHeight < contentHeight * 0.16 || area < contentWidth * contentHeight * 0.04) continue;
+
+      candidates.push({
+        x: (minX / width) * 100,
+        y: (minY / height) * 100,
+        width: (roomWidth / width) * 100,
+        height: (roomHeight / height) * 100,
+        area,
+        touchesEdge: false,
+        source: "projection"
+      });
+    }
+  }
+
+  return candidates.sort((a, b) => b.area - a.area).slice(0, 8);
+}
+
+function findProjectionCuts(obstacleMask: Uint8Array, width: number, bounds: PixelBounds, axis: "vertical" | "horizontal") {
+  const cuts: number[] = [];
+  const isVertical = axis === "vertical";
+  const start = isVertical ? bounds.minX : bounds.minY;
+  const end = isVertical ? bounds.maxX : bounds.maxY;
+  const crossStart = isVertical ? bounds.minY : bounds.minX;
+  const crossEnd = isVertical ? bounds.maxY : bounds.maxX;
+  const crossLength = Math.max(crossEnd - crossStart + 1, 1);
+  const threshold = crossLength * 0.22;
+  let clusterStart: number | null = null;
+
+  for (let primary = start; primary <= end; primary += 1) {
+    let count = 0;
+    for (let cross = crossStart; cross <= crossEnd; cross += 1) {
+      const x = isVertical ? primary : cross;
+      const y = isVertical ? cross : primary;
+      count += obstacleMask[y * width + x];
+    }
+
+    if (count >= threshold && clusterStart === null) {
+      clusterStart = primary;
+    } else if (count < threshold && clusterStart !== null) {
+      cuts.push(Math.round((clusterStart + primary - 1) / 2));
+      clusterStart = null;
+    }
+  }
+
+  if (clusterStart !== null) cuts.push(Math.round((clusterStart + end) / 2));
+
+  const guard = (end - start) * 0.12;
+  return cuts.filter((cut) => cut > start + guard && cut < end - guard);
+}
+
+function buildSegments(start: number, end: number, cuts: number[], minSize: number) {
+  const points = [start, ...cuts.sort((a, b) => a - b), end];
+  const segments: Array<[number, number]> = [];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const min = points[index];
+    const max = points[index + 1];
+    if (max - min < minSize) continue;
+    segments.push([min, max]);
+  }
+
+  return segments.length ? segments : [[start, end] as [number, number]];
+}
+
+function fallbackRoomCandidates(bounds: PixelBounds, width: number, height: number) {
+  const contentWidth = bounds.maxX - bounds.minX + 1;
+  const contentHeight = bounds.maxY - bounds.minY + 1;
+  const isWide = contentWidth >= contentHeight;
+
+  if (isWide) {
+    return [
+      roomCandidateFromPixels(bounds.minX, bounds.minY, bounds.minX + contentWidth * 0.48, bounds.maxY, width, height, "fallback"),
+      roomCandidateFromPixels(bounds.minX + contentWidth * 0.52, bounds.minY, bounds.maxX, bounds.maxY, width, height, "fallback")
+    ];
+  }
+
+  return [
+    roomCandidateFromPixels(bounds.minX, bounds.minY, bounds.maxX, bounds.minY + contentHeight * 0.48, width, height, "fallback"),
+    roomCandidateFromPixels(bounds.minX, bounds.minY + contentHeight * 0.52, bounds.maxX, bounds.maxY, width, height, "fallback")
+  ];
+}
+
+function roomCandidateFromPixels(minX: number, minY: number, maxX: number, maxY: number, width: number, height: number, source: RoomCandidate["source"]) {
+  return {
+    x: (minX / width) * 100,
+    y: (minY / height) * 100,
+    width: ((maxX - minX) / width) * 100,
+    height: ((maxY - minY) / height) * 100,
+    area: (maxX - minX) * (maxY - minY),
+    touchesEdge: false,
+    source
+  } satisfies RoomCandidate;
+}
+
+function fallbackDetectedRooms(width: number, height: number) {
+  const bounds = { minX: width * 0.08, minY: height * 0.08, maxX: width * 0.92, maxY: height * 0.92 };
+  return classifyRoomCandidates(fallbackRoomCandidates(bounds, width, height), width, height);
+}
+
+function classifyRoomCandidates(candidates: RoomCandidate[], width: number, height: number) {
+  const sortedCandidates = mergeSimilarCandidates(candidates)
+    .sort((a, b) => b.width * b.height - a.width * a.height)
+    .slice(0, 8);
+  let diningIndex = 0;
+  let kitchenAssigned = false;
+
+  return sortedCandidates.map((candidate, index) => {
+    const areaPercent = candidate.width * candidate.height;
+    const compactness = Math.min(candidate.width, candidate.height) / Math.max(candidate.width, candidate.height, 1);
+    let kind: DetectedRoomKind = "other";
+
+    if (areaPercent >= 4.5 && compactness >= 0.22 && diningIndex < 4) {
+      kind = "dining";
+      diningIndex += 1;
+    } else if (areaPercent >= 3.2 && !kitchenAssigned) {
+      kind = "kitchen";
+      kitchenAssigned = true;
+    } else if (areaPercent < 3.2 || compactness < 0.2) {
+      kind = "service";
+    }
+
+    const confidenceBase = candidate.source === "closed-space" ? 0.62 : candidate.source === "projection" ? 0.52 : 0.42;
+    const confidence = clampDecimal(confidenceBase + Math.min(areaPercent / 100, 0.18) + (compactness > 0.32 ? 0.12 : 0), 0.38, 0.94);
+    const name = kind === "dining" ? `Sala ${diningIndex}` : kind === "kitchen" ? "Cucina" : `Ambiente ${index + 1}`;
+
+    return {
+      id: crypto.randomUUID(),
+      name,
+      kind,
+      x: clampDecimal(candidate.x, 0, 98),
+      y: clampDecimal(candidate.y, 0, 98),
+      width: clampDecimal(Math.min(candidate.width, 100 - candidate.x), 2, 100),
+      height: clampDecimal(Math.min(candidate.height, 100 - candidate.y), 2, 100),
+      confidence,
+      enabled: kind === "dining"
+    } satisfies DetectedFloorRoom;
+  });
+}
+
+function mergeSimilarCandidates(candidates: RoomCandidate[]) {
+  const merged: RoomCandidate[] = [];
+
+  candidates.forEach((candidate) => {
+    const duplicate = merged.some((current) => rectangleOverlap(current, candidate) > 0.72);
+    if (!duplicate) merged.push(candidate);
+  });
+
+  return merged;
+}
+
+function rectangleOverlap(first: RoomCandidate, second: RoomCandidate) {
+  const x1 = Math.max(first.x, second.x);
+  const y1 = Math.max(first.y, second.y);
+  const x2 = Math.min(first.x + first.width, second.x + second.width);
+  const y2 = Math.min(first.y + first.height, second.y + second.height);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const smallerArea = Math.min(first.width * first.height, second.width * second.height);
+  return smallerArea ? intersection / smallerArea : 0;
+}
+
+function colorSaturation(red: number, green: number, blue: number) {
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  return max === 0 ? 0 : (max - min) / max;
+}
+
+function clampDecimal(value: number, min: number, max: number) {
+  return Math.min(Math.max(Number(value.toFixed(2)), min), max);
 }
 
 function readFileAsDataUrl(file: File) {
