@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Clock, FileImage, Plus, Save, ScanSearch, Sparkles, Table2, Trash2 } from "lucide-react";
+import { CheckCircle2, Clock, FileImage, Plus, RefreshCw, Save, ScanSearch, Sparkles, Table2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Notice } from "@/components/notice";
 import { PageHeader } from "@/components/page-header";
@@ -35,6 +35,14 @@ type DetectedFloorRoom = {
 type FullPlanAnalysis = {
   floorPlan: StoredFloorPlan;
   rooms: DetectedFloorRoom[];
+};
+
+type DetectedPlanTable = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  confidence: number;
 };
 
 const roomKindLabels: Record<DetectedRoomKind, string> = {
@@ -187,9 +195,14 @@ export function ImpostazioniWorkspace() {
         analyzedAt: new Date().toISOString(),
         sourceType: "single-room"
       };
-      const translatedTables = translatePlanToLiveRoom(activeAreaTables, analyzedImage.width, analyzedImage.height);
+      const detectedTables = await detectTablesForFloorPlan(nextFloorPlan);
+      const translatedTables =
+        detectedTables.length >= Math.max(activeAreaTables.length, 3)
+          ? buildTablesFromPlanDetection(activeAreaTables, selectedFloorPlanAreaId, detectedTables)
+          : translatePlanToLiveRoom(activeAreaTables, analyzedImage.width, analyzedImage.height);
       const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
       const nextFloorPlans = replaceFloorPlan(floorPlans, nextFloorPlan);
+      const analysisMode = detectedTables.length >= Math.max(activeAreaTables.length, 3) ? "riconosciuti dalla planimetria" : "tradotti dall'assetto configurato";
 
       setFloorPlans(nextFloorPlans);
       setTables(nextTables);
@@ -197,7 +210,7 @@ export function ImpostazioniWorkspace() {
         setNotice("Planimetria analizzata, ma il browser non ha spazio per salvarla. Prova con un'immagine più leggera.");
         return;
       }
-      setNotice(`Planimetria analizzata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli tradotti nella Sala live.`);
+      setNotice(`Planimetria analizzata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli ${analysisMode}.`);
     } catch {
       setNotice("Non sono riuscito ad analizzare questa planimetria. Prova con un'immagine PNG, JPG o WebP.");
     } finally {
@@ -261,7 +274,7 @@ export function ImpostazioniWorkspace() {
     });
   }
 
-  function applyCompleteFloorPlanAnalysis() {
+  async function applyCompleteFloorPlanAnalysis() {
     if (!fullPlanAnalysis) {
       setNotice("Carica prima una planimetria completa da analizzare.");
       return;
@@ -273,6 +286,8 @@ export function ImpostazioniWorkspace() {
       return;
     }
 
+    setIsAnalyzingPlan(true);
+
     const nextAreas = acceptedRooms.map((room, index) => {
       const existingArea = areas.find((area) => area.name.trim().toLowerCase() === room.name.trim().toLowerCase());
       return {
@@ -280,7 +295,15 @@ export function ImpostazioniWorkspace() {
         name: room.name.trim() || `Sala ${index + 1}`
       };
     });
-    const nextTables = buildTablesForDetectedRooms(tables.length ? tables : initialTables, acceptedRooms, nextAreas);
+    let detectedTables: DetectedPlanTable[] = [];
+
+    try {
+      detectedTables = await detectTablesFromPlan(fullPlanAnalysis.floorPlan.dataUrl, fullPlanAnalysis.floorPlan.width, fullPlanAnalysis.floorPlan.height);
+    } catch {
+      detectedTables = [];
+    }
+
+    const nextTables = buildTablesForDetectedRooms(tables.length ? tables : initialTables, acceptedRooms, nextAreas, detectedTables);
     const nextFloorPlans = acceptedRooms.map((room, index) => {
       const area = nextAreas[index];
 
@@ -308,10 +331,12 @@ export function ImpostazioniWorkspace() {
 
     if (!persistRoomLayout(nextAreas, nextTables, nextFloorPlans)) {
       setNotice("Sale create in pagina, ma il browser non ha spazio per salvare la planimetria completa.");
+      setIsAnalyzingPlan(false);
       return;
     }
 
-    setNotice(`Planimetria completa applicata: ${nextAreas.length} sale operative e ${nextTables.length} tavoli distribuiti.`);
+    setIsAnalyzingPlan(false);
+    setNotice(`Planimetria completa applicata: ${nextAreas.length} sale operative e ${nextTables.length} tavoli ${detectedTables.length ? "rilevati/assegnati" : "distribuiti"}.`);
   }
 
   function analyzeCurrentFloorPlan() {
@@ -320,14 +345,32 @@ export function ImpostazioniWorkspace() {
       return;
     }
 
-    const translatedTables = translatePlanToLiveRoom(activeAreaTables, activeFloorPlan.width, activeFloorPlan.height);
-    const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
-    setTables(nextTables);
-    if (!persistRoomLayout(areas, nextTables, floorPlans)) {
-      setNotice("Analisi aggiornata in pagina, ma il browser non ha spazio per salvarla.");
-      return;
+    void analyzeTablesForActiveFloorPlan(activeFloorPlan);
+  }
+
+  async function analyzeTablesForActiveFloorPlan(floorPlan: StoredFloorPlan) {
+    setIsAnalyzingPlan(true);
+
+    try {
+      const detectedTables = await detectTablesForFloorPlan(floorPlan);
+      const translatedTables =
+        detectedTables.length >= Math.max(activeAreaTables.length, 3)
+          ? buildTablesFromPlanDetection(activeAreaTables, selectedFloorPlanAreaId, detectedTables)
+          : translatePlanToLiveRoom(activeAreaTables, floorPlan.width, floorPlan.height);
+      const nextTables = mergeAreaTables(tables, selectedFloorPlanAreaId, translatedTables);
+      const analysisMode = detectedTables.length >= Math.max(activeAreaTables.length, 3) ? "rilevati dall'immagine" : "riallineati dall'assetto esistente";
+
+      setTables(nextTables);
+      if (!persistRoomLayout(areas, nextTables, floorPlans)) {
+        setNotice("Analisi aggiornata in pagina, ma il browser non ha spazio per salvarla.");
+        return;
+      }
+      setNotice(`Analisi aggiornata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli ${analysisMode}.`);
+    } catch {
+      setNotice("Non sono riuscito a rilevare i tavoli da questa immagine. Ho mantenuto l'assetto configurato.");
+    } finally {
+      setIsAnalyzingPlan(false);
     }
-    setNotice(`Analisi aggiornata per ${selectedFloorPlanArea?.name ?? "la sala"}: ${translatedTables.length} tavoli riposizionati.`);
   }
 
   function removeFloorPlan() {
@@ -338,6 +381,11 @@ export function ImpostazioniWorkspace() {
       return;
     }
     setNotice(`Planimetria rimossa da ${selectedFloorPlanArea?.name ?? "questa sala"}.`);
+  }
+
+  function clearCompletePlanAnalysis() {
+    setFullPlanAnalysis(null);
+    setNotice("Analisi planimetria completa rimossa. Puoi caricare una nuova immagine.");
   }
 
   return (
@@ -421,7 +469,7 @@ export function ImpostazioniWorkspace() {
           </CardContent>
         </Card>
 
-        <section className="grid gap-6 xl:grid-cols-2">
+        <section className="grid gap-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -485,19 +533,27 @@ export function ImpostazioniWorkspace() {
                         Usa questo flusso per piante con più sale, cucina, corridoi e servizi: Plateform separa gli ambienti e ti chiede quali sono sale operative.
                       </p>
                     </div>
-                    <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
-                      <FileImage className="size-5" />
-                      Planimetria completa
-                      <input
-                        className="sr-only"
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        onChange={(event) => {
-                          void importCompleteFloorPlan(event.currentTarget.files?.[0]);
-                          event.currentTarget.value = "";
-                        }}
-                      />
-                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
+                        {fullPlanAnalysis ? <RefreshCw className="size-5" /> : <FileImage className="size-5" />}
+                        {fullPlanAnalysis ? "Cambia immagine" : "Carica / cambia"}
+                        <input
+                          className="sr-only"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          onChange={(event) => {
+                            void importCompleteFloorPlan(event.currentTarget.files?.[0]);
+                            event.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      {fullPlanAnalysis ? (
+                        <Button type="button" variant="outline" onClick={clearCompletePlanAnalysis}>
+                          <Trash2 className="size-5" />
+                          Rimuovi
+                        </Button>
+                      ) : null}
+                    </div>
                   </div>
 
                   {fullPlanAnalysis ? (
@@ -574,7 +630,7 @@ export function ImpostazioniWorkspace() {
                             </div>
                           ))}
                         </div>
-                        <Button type="button" className="w-full" onClick={applyCompleteFloorPlanAnalysis} disabled={!operationalRoomCount}>
+                        <Button type="button" className="w-full" onClick={() => void applyCompleteFloorPlanAnalysis()} disabled={!operationalRoomCount || isAnalyzingPlan}>
                           <CheckCircle2 className="size-5" />
                           Crea {operationalRoomCount || ""} sale operative
                         </Button>
@@ -608,7 +664,7 @@ export function ImpostazioniWorkspace() {
                     </Select>
                     <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-ink px-4 text-sm font-semibold text-white transition hover:bg-slate-800">
                       <FileImage className="size-5" />
-                      Carica immagine
+                      Carica / cambia immagine
                       <input
                         className="sr-only"
                         type="file"
@@ -656,7 +712,7 @@ export function ImpostazioniWorkspace() {
                           <p className="text-sm font-extrabold">{floorPlanAspect}</p>
                         </div>
                         <div className="rounded-[6px] bg-slate-50 p-3">
-                          <p className="text-xs font-bold text-muted">Tradotti</p>
+                          <p className="text-xs font-bold text-muted">Tavoli</p>
                           <p className="text-sm font-extrabold">{activeAreaTables.length} tavoli</p>
                         </div>
                       </div>
@@ -802,7 +858,35 @@ function mergeAreaTables(allTables: TableConfig[], areaId: string, areaTables: T
   return allTables.map((table) => (table.areaId === areaId ? updatedTables.get(table.id) ?? table : table));
 }
 
-function buildTablesForDetectedRooms(sourceTables: TableConfig[], rooms: DetectedFloorRoom[], areas: DiningAreaConfig[]) {
+function buildTablesFromPlanDetection(sourceTables: TableConfig[], areaId: string, detectedTables: DetectedPlanTable[]) {
+  const sortedTables = sourceTables.slice().sort((a, b) => tableSortValue(a.name) - tableSortValue(b.name));
+
+  return detectedTables
+    .slice()
+    .sort((a, b) => (Math.abs(a.y - b.y) > 6 ? a.y - b.y : a.x - b.x))
+    .map((detectedTable, index) => {
+      const sourceTable = sortedTables[index];
+
+      return {
+        id: sourceTable?.id ?? crypto.randomUUID(),
+        areaId,
+        name: sourceTable?.name ?? `T${index + 1}`,
+        seatsMin: sourceTable?.seatsMin ?? 1,
+        seatsMax: sourceTable?.seatsMax ?? inferSeatsFromDetectedTable(detectedTable, index),
+        positionX: clampNumber(detectedTable.x, 4, 96),
+        positionY: clampNumber(detectedTable.y, 4, 96)
+      } satisfies TableConfig;
+    });
+}
+
+function inferSeatsFromDetectedTable(table: DetectedPlanTable, index: number) {
+  const footprint = table.width * table.height;
+  if (footprint > 35) return 6;
+  if (footprint > 18 || index % 3 === 2) return 4;
+  return 2;
+}
+
+function buildTablesForDetectedRooms(sourceTables: TableConfig[], rooms: DetectedFloorRoom[], areas: DiningAreaConfig[], planTables: DetectedPlanTable[] = []) {
   const sortedTables = sourceTables.slice().sort((a, b) => tableSortValue(a.name) - tableSortValue(b.name));
   const totalTables = Math.max(sortedTables.length, rooms.length * 2);
   const roomTableCounts = distributeTableCounts(rooms, totalTables);
@@ -813,7 +897,11 @@ function buildTablesForDetectedRooms(sourceTables: TableConfig[], rooms: Detecte
 
   rooms.forEach((room, roomIndex) => {
     const area = areas[roomIndex];
-    const positions = tablePositionsForRoom(roomTableCounts[roomIndex] ?? 1, room.width / Math.max(room.height, 1));
+    const detectedTablesInRoom = normalizeTablesForDetectedRoom(planTables, room);
+    const positions =
+      detectedTablesInRoom.length >= 2
+        ? detectedTablesInRoom.map((table) => ({ x: table.x, y: table.y }))
+        : tablePositionsForRoom(roomTableCounts[roomIndex] ?? 1, room.width / Math.max(room.height, 1));
 
     positions.forEach((position) => {
       const sourceTable = sortedTables[sourceIndex];
@@ -835,6 +923,20 @@ function buildTablesForDetectedRooms(sourceTables: TableConfig[], rooms: Detecte
   });
 
   return nextTables;
+}
+
+function normalizeTablesForDetectedRoom(planTables: DetectedPlanTable[], room: DetectedFloorRoom) {
+  const roomRight = room.x + room.width;
+  const roomBottom = room.y + room.height;
+
+  return planTables
+    .filter((table) => table.x >= room.x && table.x <= roomRight && table.y >= room.y && table.y <= roomBottom)
+    .map((table) => ({
+      ...table,
+      x: clampNumber(((table.x - room.x) / room.width) * 100, 8, 92),
+      y: clampNumber(((table.y - room.y) / room.height) * 100, 10, 90)
+    }))
+    .sort((a, b) => (Math.abs(a.y - b.y) > 6 ? a.y - b.y : a.x - b.x));
 }
 
 function distributeTableCounts(rooms: DetectedFloorRoom[], totalTables: number) {
@@ -945,6 +1047,268 @@ async function readAndNormalizeImage(file: File) {
     width: canvas.width,
     height: canvas.height
   };
+}
+
+type TableComponent = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  area: number;
+};
+
+async function detectTablesForFloorPlan(floorPlan: StoredFloorPlan) {
+  const detectedTables = await detectTablesFromPlan(floorPlan.dataUrl, floorPlan.width, floorPlan.height);
+
+  if (
+    floorPlan.sourceType !== "complete-plan" ||
+    typeof floorPlan.sourceX !== "number" ||
+    typeof floorPlan.sourceY !== "number" ||
+    typeof floorPlan.sourceWidth !== "number" ||
+    typeof floorPlan.sourceHeight !== "number"
+  ) {
+    return detectedTables;
+  }
+
+  return detectedTables
+    .filter((table) => {
+      const right = floorPlan.sourceX! + floorPlan.sourceWidth!;
+      const bottom = floorPlan.sourceY! + floorPlan.sourceHeight!;
+      return table.x >= floorPlan.sourceX! && table.x <= right && table.y >= floorPlan.sourceY! && table.y <= bottom;
+    })
+    .map((table) => ({
+      ...table,
+      x: ((table.x - floorPlan.sourceX!) / floorPlan.sourceWidth!) * 100,
+      y: ((table.y - floorPlan.sourceY!) / floorPlan.sourceHeight!) * 100,
+      width: (table.width / floorPlan.sourceWidth!) * 100,
+      height: (table.height / floorPlan.sourceHeight!) * 100
+    }));
+}
+
+async function detectTablesFromPlan(dataUrl: string, width: number, height: number) {
+  const image = await loadImage(dataUrl);
+  const sampleScale = Math.min(1, 720 / Math.max(width, height));
+  const sampleWidth = Math.max(160, Math.round(width * sampleScale));
+  const sampleHeight = Math.max(160, Math.round(height * sampleScale));
+  const canvas = document.createElement("canvas");
+  canvas.width = sampleWidth;
+  canvas.height = sampleHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  if (!context) return [];
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, sampleWidth, sampleHeight);
+  context.drawImage(image, 0, 0, sampleWidth, sampleHeight);
+
+  const imageData = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+  const furnitureMask = new Uint8Array(sampleWidth * sampleHeight);
+
+  for (let y = 0; y < sampleHeight; y += 1) {
+    for (let x = 0; x < sampleWidth; x += 1) {
+      const pixelIndex = (y * sampleWidth + x) * 4;
+      const alpha = imageData[pixelIndex + 3];
+      const red = imageData[pixelIndex];
+      const green = imageData[pixelIndex + 1];
+      const blue = imageData[pixelIndex + 2];
+      const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      const saturation = colorSaturation(red, green, blue);
+      const isFurnitureStroke = alpha > 32 && luminance < 205 && saturation < 0.45;
+
+      if (isFurnitureStroke) furnitureMask[y * sampleWidth + x] = 1;
+    }
+  }
+
+  const components = findTableLikeComponents(furnitureMask, sampleWidth, sampleHeight);
+  const clusteredComponents = clusterTableComponents(components, sampleWidth, sampleHeight);
+  const tableCandidates = clusteredComponents
+    .map((component) => tableCandidateFromComponent(component, sampleWidth, sampleHeight))
+    .filter((table): table is DetectedPlanTable => Boolean(table));
+
+  return mergeDetectedTables(tableCandidates)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 28)
+    .sort((a, b) => (Math.abs(a.y - b.y) > 6 ? a.y - b.y : a.x - b.x));
+}
+
+function findTableLikeComponents(mask: Uint8Array, width: number, height: number) {
+  const visited = new Uint8Array(width * height);
+  const components: TableComponent[] = [];
+  const minWidth = Math.max(5, width * 0.009);
+  const minHeight = Math.max(5, height * 0.009);
+  const maxWidth = width * 0.14;
+  const maxHeight = height * 0.14;
+
+  for (let startY = 0; startY < height; startY += 1) {
+    for (let startX = 0; startX < width; startX += 1) {
+      const startIndex = startY * width + startX;
+      if (visited[startIndex] || !mask[startIndex]) continue;
+
+      const queue = [startIndex];
+      visited[startIndex] = 1;
+      let cursor = 0;
+      let area = 0;
+      let minX = startX;
+      let minY = startY;
+      let maxX = startX;
+      let maxY = startY;
+
+      while (cursor < queue.length) {
+        const index = queue[cursor];
+        cursor += 1;
+        const x = index % width;
+        const y = Math.floor(index / width);
+        area += 1;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) continue;
+            const neighborX = x + dx;
+            const neighborY = y + dy;
+            if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
+            const neighbor = neighborY * width + neighborX;
+            if (visited[neighbor] || !mask[neighbor]) continue;
+            visited[neighbor] = 1;
+            queue.push(neighbor);
+          }
+        }
+      }
+
+      const componentWidth = maxX - minX + 1;
+      const componentHeight = maxY - minY + 1;
+      const density = area / Math.max(componentWidth * componentHeight, 1);
+      const aspectRatio = componentWidth / Math.max(componentHeight, 1);
+      const isLikelyFurniturePart =
+        componentWidth >= minWidth &&
+        componentHeight >= minHeight &&
+        componentWidth <= maxWidth &&
+        componentHeight <= maxHeight &&
+        density >= 0.05 &&
+        density <= 0.85 &&
+        aspectRatio >= 0.22 &&
+        aspectRatio <= 4.5;
+
+      if (!isLikelyFurniturePart) continue;
+
+      components.push({ minX, minY, maxX, maxY, area });
+    }
+  }
+
+  return components;
+}
+
+function clusterTableComponents(components: TableComponent[], width: number, height: number) {
+  const clusters: TableComponent[] = [];
+  const maxGap = Math.max(10, Math.min(width, height) * 0.035);
+
+  components
+    .slice()
+    .sort((a, b) => a.minY - b.minY || a.minX - b.minX)
+    .forEach((component) => {
+      const clusterIndex = clusters.findIndex((cluster) => componentGap(cluster, component) <= maxGap && mergedComponentLooksLikeTable(cluster, component, width, height));
+      if (clusterIndex === -1) {
+        clusters.push({ ...component });
+        return;
+      }
+
+      const cluster = clusters[clusterIndex];
+      clusters[clusterIndex] = {
+        minX: Math.min(cluster.minX, component.minX),
+        minY: Math.min(cluster.minY, component.minY),
+        maxX: Math.max(cluster.maxX, component.maxX),
+        maxY: Math.max(cluster.maxY, component.maxY),
+        area: cluster.area + component.area
+      };
+    });
+
+  return clusters;
+}
+
+function mergedComponentLooksLikeTable(first: TableComponent, second: TableComponent, width: number, height: number) {
+  const minX = Math.min(first.minX, second.minX);
+  const minY = Math.min(first.minY, second.minY);
+  const maxX = Math.max(first.maxX, second.maxX);
+  const maxY = Math.max(first.maxY, second.maxY);
+  const mergedWidth = maxX - minX + 1;
+  const mergedHeight = maxY - minY + 1;
+  const aspectRatio = mergedWidth / Math.max(mergedHeight, 1);
+  const density = (first.area + second.area) / Math.max(mergedWidth * mergedHeight, 1);
+
+  return mergedWidth <= width * 0.16 && mergedHeight <= height * 0.16 && aspectRatio >= 0.28 && aspectRatio <= 4.2 && density >= 0.025;
+}
+
+function componentGap(first: TableComponent, second: TableComponent) {
+  const horizontalGap = Math.max(0, Math.max(first.minX, second.minX) - Math.min(first.maxX, second.maxX));
+  const verticalGap = Math.max(0, Math.max(first.minY, second.minY) - Math.min(first.maxY, second.maxY));
+  return Math.hypot(horizontalGap, verticalGap);
+}
+
+function tableCandidateFromComponent(component: TableComponent, width: number, height: number) {
+  const componentWidth = component.maxX - component.minX + 1;
+  const componentHeight = component.maxY - component.minY + 1;
+  const density = component.area / Math.max(componentWidth * componentHeight, 1);
+  const aspectRatio = componentWidth / Math.max(componentHeight, 1);
+  const footprint = (componentWidth * componentHeight) / Math.max(width * height, 1);
+  const isTableCandidate =
+    componentWidth >= width * 0.018 &&
+    componentHeight >= height * 0.018 &&
+    componentWidth <= width * 0.18 &&
+    componentHeight <= height * 0.18 &&
+    density >= 0.025 &&
+    density <= 0.65 &&
+    aspectRatio >= 0.35 &&
+    aspectRatio <= 3.8 &&
+    footprint >= 0.00025 &&
+    footprint <= 0.025;
+
+  if (!isTableCandidate) return null;
+
+  return {
+    x: ((component.minX + componentWidth / 2) / width) * 100,
+    y: ((component.minY + componentHeight / 2) / height) * 100,
+    width: (componentWidth / width) * 100,
+    height: (componentHeight / height) * 100,
+    confidence: clampDecimal(0.44 + Math.min(footprint * 22, 0.22) + Math.min(density * 0.24, 0.18), 0.35, 0.88)
+  } satisfies DetectedPlanTable;
+}
+
+function mergeDetectedTables(tables: DetectedPlanTable[]) {
+  const merged: DetectedPlanTable[] = [];
+
+  tables.forEach((table) => {
+    const existingIndex = merged.findIndex((current) => detectedTableOverlap(current, table) > 0.58 || distanceBetweenTables(current, table) < 3.5);
+    if (existingIndex === -1) {
+      merged.push(table);
+      return;
+    }
+
+    const existing = merged[existingIndex];
+    merged[existingIndex] = existing.confidence >= table.confidence ? existing : table;
+  });
+
+  return merged;
+}
+
+function detectedTableOverlap(first: DetectedPlanTable, second: DetectedPlanTable) {
+  const firstLeft = first.x - first.width / 2;
+  const firstTop = first.y - first.height / 2;
+  const secondLeft = second.x - second.width / 2;
+  const secondTop = second.y - second.height / 2;
+  const x1 = Math.max(firstLeft, secondLeft);
+  const y1 = Math.max(firstTop, secondTop);
+  const x2 = Math.min(firstLeft + first.width, secondLeft + second.width);
+  const y2 = Math.min(firstTop + first.height, secondTop + second.height);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const smallerArea = Math.min(first.width * first.height, second.width * second.height);
+  return smallerArea ? intersection / smallerArea : 0;
+}
+
+function distanceBetweenTables(first: DetectedPlanTable, second: DetectedPlanTable) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
 type RoomCandidate = {
